@@ -1,5 +1,4 @@
 #import "GSAppearance.h"
-#import "GSPhotosGlass.h"
 #import "../Shared/GSLocalization.h"
 #import "GSPanel.h"
 #import "GSExporter.h"
@@ -48,7 +47,7 @@
 @end
 @implementation GSPanel
 - (void)viewDidLoad{
- [super viewDidLoad];GSInstallPhotosGlass();GSInstallNativeRouting();GSInstallUploadDiagnostics();GSInstallUnlimitedStorage();self.title=@"GoToHP";self.jobs=@[];self.statusText=GSL(@"Checking the connection…");self.statusLanguage=GSLanguage();
+ [super viewDidLoad];GSInstallNativeRouting();GSInstallUploadDiagnostics();GSInstallUnlimitedStorage();self.title=@"GoToHP";self.jobs=@[];self.statusText=GSL(@"Checking the connection…");self.statusLanguage=GSLanguage();
  self.navigationItem.leftBarButtonItem=GSNavigationButton(GSL(@"Done"),self,@selector(close));
  self.navigationItem.rightBarButtonItem=GSNavigationButton(self.settingsMode?GSL(@"Reconnect"):GSL(@"Add"),self,@selector(primary));
 #if GS_JAILED
@@ -170,7 +169,7 @@
  if(GSIsGooglePhotos())[groups addObject:@{@"title":GSL(@"Google Photos integration"),@"rows":@[@10],@"footer":GS_BACKUP_HELP}];
  [groups addObject:@{@"title":GSL(@"Queue management"),@"rows":@[@8,@9]}];
  if(GSIsGooglePhotos())[groups addObject:@{@"title":GSL(@"Diagnostics"),@"rows":@[@11,@12],@"footer":GSL(@"Troubleshoot compatibility. Tokens and media are never recorded.")}];
- [groups addObject:@{@"title":GSL(@"Appearance"),@"rows":GSIsGooglePhotos()?@[@15,@16,@19]:@[@15],@"footer":GSIsGooglePhotos()?GSL(@"Reopen the profile menu to apply changes. Unlimited storage affects only the display; account limits and upload quality stay unchanged."):GSL(@"Reopen the profile menu to update its language.")}];
+ [groups addObject:@{@"title":GSL(@"Appearance"),@"rows":GSIsGooglePhotos()?@[@15,@16]:@[@15],@"footer":GSIsGooglePhotos()?GSL(@"Reopen the profile menu to apply changes. Unlimited storage affects only the display; account limits and upload quality stay unchanged."):GSL(@"Reopen the profile menu to update its language.")}];
  return groups;
 }
 - (NSInteger)queueSection{return self.controlSections.count+1;}
@@ -202,13 +201,11 @@
  if(control==10)return GSNativeRoutingEnabled();
  if(control==11)return GSUploadDiagnosticsEnabled();
  if(control==16)return GSUnlimitedStorageEnabled();
- if(control==19)return GSPhotosGlassEnabled();
  return [self.options[@[@"wifiOnly",@"chargingOnly",@"paused"][control-3]]boolValue];
 }
 - (void)controlSwitchChanged:(UISwitch *)toggle{
  NSInteger control=toggle.tag;BOOL desired=toggle.on;
  [toggle setOn:[self switchValueForControl:control] animated:YES];
- if(control==19){GSSetPhotosGlass(desired);[self reloadTablePreservingPosition];return;}
  if(control==16){GSSetUnlimitedStorage(desired);[self reloadTablePreservingPosition];return;}
  if(self.busy)return;
  if(control==10){[self toggleNativeRouting];return;}
@@ -233,8 +230,8 @@
  }
  NSInteger control=[self controlAtPath:path];
  if(control>=0){
-  NSArray *titles=@[GSL(@"Quality"),GSL(@"Concurrent uploads"),GSL(@"Retry limit"),GSL(@"Wi-Fi only"),GSL(@"Charging only"),GSL(@"Pause uploads"),GSL(@"Destination account"),GSL(@"Remove account from GoToHP"),GSL(@"Retry failed uploads"),GSL(@"Clear completed history"),GS_BACKUP_TITLE,GSL(@"Upload diagnostics"),GSL(@"Export diagnostics"),GSL(@"Connect or refresh account"),GSL(@"Choose photos and videos"),GSL(@"Language"),GSL(@"Show unlimited storage"),GSL(@"Choose album"),GSL(@"Stop preparing"),@"Google Photos · Liquid Glass"];
-  NSArray *icons=@[@"photo",@"square.stack.3d.up",@"arrow.clockwise",@"wifi",@"battery.100.bolt",@"pause.circle",@"person.crop.circle.badge.checkmark",@"person.crop.circle.badge.minus",@"arrow.clockwise.circle",@"checkmark.circle",@"arrow.triangle.branch",@"waveform.path.ecg",@"square.and.arrow.up",@"person.crop.circle.badge.checkmark",@"plus.circle",@"globe",@"cloud",@"rectangle.stack",@"stop.circle",@"rectangle.bottomhalf.inset.filled"];
+  NSArray *titles=@[GSL(@"Quality"),GSL(@"Concurrent uploads"),GSL(@"Retry limit"),GSL(@"Wi-Fi only"),GSL(@"Charging only"),GSL(@"Pause uploads"),GSL(@"Destination account"),GSL(@"Remove account from GoToHP"),GSL(@"Retry failed uploads"),GSL(@"Clear completed history"),GS_BACKUP_TITLE,GSL(@"Upload diagnostics"),GSL(@"Export diagnostics"),GSL(@"Connect or refresh account"),GSL(@"Choose photos and videos"),GSL(@"Language"),GSL(@"Show unlimited storage"),GSL(@"Choose album"),GSL(@"Stop preparing")];
+  NSArray *icons=@[@"photo",@"square.stack.3d.up",@"arrow.clockwise",@"wifi",@"battery.100.bolt",@"pause.circle",@"person.crop.circle.badge.checkmark",@"person.crop.circle.badge.minus",@"arrow.clockwise.circle",@"checkmark.circle",@"arrow.triangle.branch",@"waveform.path.ecg",@"square.and.arrow.up",@"person.crop.circle.badge.checkmark",@"plus.circle",@"globe",@"cloud",@"rectangle.stack",@"stop.circle"];
   cell.textLabel.text=titles[control];cell.imageView.image=[UIImage systemImageNamed:icons[control]];
   cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
   if(control==17)cell.detailTextLabel.text=GSL(@"Upload an entire album; browse folders to choose an album.");
@@ -246,14 +243,13 @@
   if(control==6)cell.detailTextLabel.text=self.accounts[@"selected"];
   if(control==13)cell.detailTextLabel.text=GSL(@"Check the connection for the signed-in account");
   if(control==7)cell.textLabel.textColor=UIColor.systemRedColor;
-  if((control>=3&&control<=5)||control==10||control==11||control==16||control==19){
+  if((control>=3&&control<=5)||control==10||control==11||control==16){
    UISwitch *toggle=[UISwitch new];toggle.tag=control;toggle.on=[self switchValueForControl:control];
    toggle.accessibilityLabel=titles[control];toggle.onTintColor=tableView.tintColor;
-   toggle.enabled=control==19?GSPhotosGlassAvailable():control==16?GSUnlimitedStorageAvailable():!self.busy&&(control==10?GSNativeRoutingAvailable():control==11?GSUploadDiagnosticsAvailable():self.options!=nil);
+   toggle.enabled=control==16?GSUnlimitedStorageAvailable():!self.busy&&(control==10?GSNativeRoutingAvailable():control==11?GSUploadDiagnosticsAvailable():self.options!=nil);
    [toggle addTarget:self action:@selector(controlSwitchChanged:) forControlEvents:UIControlEventValueChanged];
    cell.accessoryView=toggle;cell.selectionStyle=UITableViewCellSelectionStyleNone;
   }
-  if(control==19)cell.detailTextLabel.text=GSPhotosGlassAvailable()?@"iOS 26+ · Google Photos 7.92.0+":GSL(@"Unavailable in this version");
   if(control==16&&!GSUnlimitedStorageAvailable())cell.detailTextLabel.text=GSL(@"Unavailable in this version");
   if(control==10&&!GSNativeRoutingAvailable())cell.detailTextLabel.text=GSL(@"Unavailable in this version");
   return cell;
@@ -353,7 +349,7 @@
  [tableView deselectRowAtIndexPath:path animated:YES];
  NSInteger control=[self controlAtPath:path];
  if(control==12){[self exportUploadDiagnostics];return;}
- if(control==16||control==19)return;
+ if(control==16)return;
  if(control==18){GSStopBatchImport(NO);return;}
  if(self.busy)return;
  if(control>=0){

@@ -6,3 +6,4 @@ packages/
 .theos-sdk/
 
 __pycache__/
+.ipa/

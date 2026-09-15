@@ -119,7 +119,6 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   },[NSDate dateWithTimeIntervalSinceNow:5]);
  });
 }
-#include "photos_glass_fixture.h"
 @interface GSFixtureScene : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic,strong) UIWindow *window;
 @property(nonatomic) BOOL started;
@@ -172,7 +171,6 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   }else if(panel.navigationItem.rightBarButtonItem.customView){Finish(NO,@"legacy settings appearance changed");return;}
   UITableViewCell *status=[panel tableView:panel.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
   if(![status.detailTextLabel.text isEqual:@"Authenticated · Ready to upload"]){Finish(NO,@"cached status language did not update");return;}
-  if(!GSCheckPhotosGlass(panel)){Finish(NO,@"Google Photos bottom bar glass regression");return;}
   NSIndexPath *storagePath=[NSIndexPath indexPathForRow:1 inSection:6];
   [panel setValue:@YES forKey:@"busy"];
   UITableViewCell *storage=[panel tableView:panel.tableView cellForRowAtIndexPath:storagePath];

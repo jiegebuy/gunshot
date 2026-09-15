@@ -21,7 +21,7 @@ xcrun --sdk iphonesimulator clang -fobjc-arc -isysroot "$sdk" \
  -target "${architecture}-apple-ios15.0-simulator" \
  -DGS_JAILED=1 -I.build/runtime-fixture \
  -framework UIKit -framework Foundation -framework CoreGraphics -framework Photos -framework PhotosUI -framework Network -framework Security -framework CoreFoundation -lresolv \
- UI/GSPanel.m UI/GSAppearance.m UI/GSPhotosGlass.m UI/GSBatchImport.m UI/GSAlbumPicker.m UI/GSAccountConnection.m UI/GSUploadMonitor.m UI/GSBackupLifecycle.m Jailed/SideloadIdentity.m tests/settings_ui.m .build/runtime-fixture/EmbeddedService.o \
+ UI/GSPanel.m UI/GSAppearance.m UI/GSBatchImport.m UI/GSAlbumPicker.m UI/GSAccountConnection.m UI/GSUploadMonitor.m UI/GSBackupLifecycle.m Jailed/SideloadIdentity.m tests/settings_ui.m .build/runtime-fixture/EmbeddedService.o \
  .build/runtime-fixture/libgotohp.a -o "$app/GoToHPSettingsFixture"
 python3 - <<'PY'
 import pathlib,plistlib
