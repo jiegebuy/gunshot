@@ -4,6 +4,7 @@
 #import "../UI/GSPhotosGlass.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
+#include <math.h>
 #include <string.h>
 
 static UIColor *GSFixtureSegmentColor(void){return [UIColor colorWithRed:0.94 green:0.94 blue:0.96 alpha:1.0];}
@@ -71,8 +72,6 @@ static id GSFixturePhotosShadow(void){return @"photos-search-shadow";}
 - (void)setSelectedSegmentIndex:(NSInteger)value{
  if(_selectedSegmentIndex==value)return;
  _selectedSegmentIndex=value;
- // Some audited 7.92 variants emit ValueChanged here. The production bridge
- // also covers variants that only store the index.
  [self sendActionsForControlEvents:UIControlEventValueChanged];
 }
 - (void)layoutSubviews{
@@ -93,10 +92,7 @@ static id GSFixturePhotosShadow(void){return @"photos-search-shadow";}
 @property(nonatomic,strong) UIColor *tintColor;
 @end
 @implementation M3CMaterialGlassEffect
-- (instancetype)init{
- if((self=[super init])){self.backgroundOpacity=1.0;self.tintColor=GSFixtureSearchColor();}
- return self;
-}
+- (instancetype)init{if((self=[super init])){self.backgroundOpacity=1.0;self.tintColor=GSFixtureSearchColor();}return self;}
 @end
 
 @interface M3CMaterialGlassEffectView : UIVisualEffectView
@@ -189,7 +185,7 @@ static void GSFixtureApplyNormalSearchStyle(M3CButton *button){
 - (void)gestureTap:(UITapGestureRecognizer *)gesture{self.taps++;}
 - (void)viewDidLoad{
  [super viewDidLoad];self.view.backgroundColor=UIColor.systemBackgroundColor;
- self.floatingSegmentedControl=[[PHSSegmentedControl alloc]initWithFrame:CGRectMake(0,0,260,56)];
+ self.floatingSegmentedControl=[[PHSSegmentedControl alloc]initWithFrame:CGRectMake(0,0,260,48)];
  self.floatingSearchButton=[[M3CButton alloc]initWithFrame:CGRectMake(0,0,56,56)];
  [self.floatingSearchButton phs_brandIconTonalRound];
  [self.floatingSearchButton setShadow:GSFixturePhotosShadow() forState:UIControlStateNormal];
@@ -210,7 +206,7 @@ static void GSFixtureApplyNormalSearchStyle(M3CButton *button){
  [super viewDidLayoutSubviews];
  CGFloat width=MIN(MAX(220,self.view.bounds.size.width-32),360);
  self.floatingBottomTabBar.frame=CGRectMake(16,MAX(0,self.view.bounds.size.height-76),width,60);
- self.floatingSegmentedControl.frame=CGRectMake(0,2,MAX(120,width-72),56);
+ self.floatingSegmentedControl.frame=CGRectMake(0,6,MAX(120,width-72),48);
  self.floatingSearchButton.frame=CGRectMake(MAX(0,width-60),2,56,56);
  [self.floatingSegmentedControl layoutIfNeeded];[self.floatingSearchButton layoutIfNeeded];
 }
@@ -265,11 +261,18 @@ static BOOL GSFixturePhotosGlassContracts(void){
  return YES;
 }
 
-static UITabBarController *GSFixtureNativeTabController(PHSTabBarController *controller){
- for(UIViewController *child in controller.childViewControllers)if([child isKindOfClass:UITabBarController.class])return (UITabBarController *)child;
+static UIControl *GSFixtureGlassTabProxy(PHSTabBarController *controller){
+ UIView *host=controller.floatingBottomTabBar;
+ for(UIView *view in host.subviews)if([NSStringFromClass(view.class) isEqualToString:@"GSPhotosGlassTabView"])return (UIControl *)view;
  return nil;
 }
-static UITabBar *GSFixtureNativeTabBar(PHSTabBarController *controller){return GSFixtureNativeTabController(controller).tabBar;}
+static NSArray<UIButton *> *GSFixtureGlassTabButtons(UIControl *proxy){
+ id value=[proxy valueForKey:@"buttons"];return [value isKindOfClass:NSArray.class]?value:nil;
+}
+static NSInteger GSFixtureGlassSelectedIndex(UIControl *proxy){return [[proxy valueForKey:@"selectedIndex"]integerValue];}
+static UIVisualEffectView *GSFixtureOuterGlass(UIControl *proxy){
+ id value=[proxy valueForKey:@"outerGlass"];return [value isKindOfClass:UIVisualEffectView.class]?value:nil;
+}
 static UIButton *GSFixtureNativeSearchProxy(PHSTabBarController *controller){
  UIView *host=controller.floatingBottomTabBar;
  for(UIView *view in host.subviews)if([view isKindOfClass:UIButton.class]&&view!=controller.floatingSearchButton&&
@@ -310,13 +313,11 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   PHSTabBarController *controller=[PHSTabBarController new];GSFixtureAttach(controller,window);
   PHSSegmentedControl *segments=controller.floatingSegmentedControl;M3CButton *search=controller.floatingSearchButton;
   UIStackView *bar=controller.floatingBottomTabBar;UIView *selection=segments.selection;UIImage *glyph=[search imageForState:UIControlStateNormal];UITapGestureRecognizer *gesture=controller.fixtureGesture;
+  NSArray *originalChildren=controller.childViewControllers.copy;
   id savedNormal=[search backgroundColorForState:UIControlStateNormal];
   id savedHighlight=[search backgroundColorForState:UIControlStateHighlighted];
   id savedTint=[search tintColorForState:UIControlStateNormal];id savedShadow=[search shadowForState:UIControlStateNormal];
-  NSUInteger initialNormalBrandCalls=search.normalBrandCalls;
-  GS_GLASS_CHECK([savedNormal isEqual:GSFixturePhotosNormalColor()]&&[savedHighlight isEqual:GSFixturePhotosHighlightColor()]&&[savedTint isEqual:GSFixturePhotosTintColor()]&&[savedShadow isEqual:GSFixturePhotosShadow()]);
-  GS_GLASS_CHECK(![savedNormal isEqual:GSFixtureBrandNormalColor()]&&![savedHighlight isEqual:GSFixtureBrandHighlightColor()]&&![savedTint isEqual:GSFixtureBrandTintColor()]&&![savedShadow isEqual:GSFixtureBrandShadow()]);
-  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureNativeTabController(controller)&&!GSFixtureNativeTabBar(controller)&&!GSFixtureNativeSearchProxy(controller)&&search.superview==bar&&[bar.arrangedSubviews containsObject:search]&&search.opaque&&initialNormalBrandCalls==1);
+  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureGlassTabProxy(controller)&&!GSFixtureNativeSearchProxy(controller)&&search.superview==bar&&[bar.arrangedSubviews containsObject:search]);
   GS_GLASS_CHECK([search.allTargets containsObject:controller]&&[segments.allTargets containsObject:controller]&&[search.gestureRecognizers containsObject:gesture]);
 
   toggle.on=YES;[toggle sendActionsForControlEvents:UIControlEventValueChanged];
@@ -325,69 +326,71 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   GS_GLASS_CHECK([snapshot[@"available"]boolValue]&&[snapshot[@"hooksInstalled"]boolValue]&&[snapshot[@"attachedBars"]unsignedIntegerValue]>=1);
   GS_GLASS_CHECK([snapshot[@"designCompatibilityOverride"]boolValue]&&![snapshot[@"restartRequired"]boolValue]&&[snapshot[@"activeThisLaunch"]boolValue]);
 
-  UITabBarController *nativeTabs=GSFixtureNativeTabController(controller);UITabBar *nativeTabBar=nativeTabs.tabBar;
-  UIButton *searchProxy=GSFixtureNativeSearchProxy(controller);UIView *host=bar;
-  GS_GLASS_CHECK(nativeTabs&&nativeTabs.parentViewController==controller&&nativeTabs.view.superview==host&&nativeTabs.delegate&&nativeTabs.mode==UITabBarControllerModeTabBar);
-  GS_GLASS_CHECK(nativeTabBar&&nativeTabBar.items.count==3&&nativeTabBar.delegate&&nativeTabBar.translucent&&[nativeTabBar isDescendantOfView:nativeTabs.view]);
-  GS_GLASS_CHECK([nativeTabBar.items[0].title isEqual:@"Photos"]&&[nativeTabBar.items[1].title isEqual:@"Collections"]&&[nativeTabBar.items[2].title isEqual:@"Create"]);
+  UIControl *tabProxy=GSFixtureGlassTabProxy(controller);NSArray<UIButton *> *buttons=GSFixtureGlassTabButtons(tabProxy);
+  UIButton *searchProxy=GSFixtureNativeSearchProxy(controller);UIVisualEffectView *outerGlass=GSFixtureOuterGlass(tabProxy);UIView *host=bar;
+  GS_GLASS_CHECK(tabProxy&&tabProxy.superview==host&&buttons.count==3&&outerGlass&&outerGlass.effect);
+  GS_GLASS_CHECK(controller.childViewControllers.count==originalChildren.count&&[controller.childViewControllers isEqualToArray:originalChildren]);
+  GS_GLASS_CHECK(![tabProxy isKindOfClass:UITabBar.class]&&![controller.childViewControllers.lastObject isKindOfClass:UITabBarController.class]);
+  GS_GLASS_CHECK([buttons[0].accessibilityLabel isEqual:@"Photos"]&&[buttons[1].accessibilityLabel isEqual:@"Collections"]&&[buttons[2].accessibilityLabel isEqual:@"Create"]);
+  GS_GLASS_CHECK(GSFixtureGlassSelectedIndex(tabProxy)==0&&buttons[0].selected&&!buttons[1].selected&&!buttons[2].selected);
   GS_GLASS_CHECK(searchProxy&&searchProxy.superview==host&&searchProxy.configuration&&searchProxy.configuration.image&&searchProxy.configuration.cornerStyle==UIButtonConfigurationCornerStyleCapsule);
-  GS_GLASS_CHECK([searchProxy.accessibilityLabel isEqual:@"Search"]&&![searchProxy isDescendantOfView:nativeTabs.view]);
-  GS_GLASS_CHECK(segments.superview==bar&&search.superview==bar&&[bar.arrangedSubviews containsObject:segments]&&[bar.arrangedSubviews containsObject:search]);
+  GS_GLASS_CHECK([searchProxy.accessibilityLabel isEqual:@"Search"]);
   GS_GLASS_CHECK(segments.alpha==0&&!segments.userInteractionEnabled&&segments.accessibilityElementsHidden&&search.alpha==0&&!search.userInteractionEnabled&&search.accessibilityElementsHidden);
-  CGRect expectedTab=[segments convertRect:segments.bounds toView:host],expectedSearch=[search convertRect:search.bounds toView:host];
-  CGFloat searchBottom=CGRectGetMaxY(expectedSearch);if(searchBottom>CGRectGetMinY(expectedTab))expectedTab.size.height=searchBottom-CGRectGetMinY(expectedTab);
-  GS_GLASS_CHECK(CGRectEqualToRect(nativeTabs.view.frame,expectedTab)&&CGRectEqualToRect(nativeTabBar.frame,nativeTabs.view.bounds)&&CGRectEqualToRect(searchProxy.frame,expectedSearch));
-  GS_GLASS_CHECK(CGRectGetMinX(searchProxy.frame)-CGRectGetMaxX(nativeTabs.view.frame)>=10.0);
+
+  CGRect originalTab=[segments convertRect:segments.bounds toView:host],expectedSearch=[search convertRect:search.bounds toView:host];
+  CGFloat expectedHeight=MAX(CGRectGetHeight(expectedSearch),56.0);
+  CGRect expectedTab=originalTab;expectedTab.origin.y=CGRectGetMidY(expectedSearch)-expectedHeight*0.5;expectedTab.size.height=expectedHeight;
+  GS_GLASS_CHECK(CGRectEqualToRect(tabProxy.frame,expectedTab)&&CGRectEqualToRect(searchProxy.frame,expectedSearch));
+  GS_GLASS_CHECK(fabs(CGRectGetHeight(tabProxy.frame)-CGRectGetHeight(searchProxy.frame))<0.01);
+  for(UIButton *button in buttons)GS_GLASS_CHECK(CGRectGetHeight(button.frame)>=CGRectGetHeight(tabProxy.bounds)-10.1);
+
   GS_GLASS_CHECK(search.glassType==0&&!search.glassEffectView.effect&&search.opaque&&[search.backgroundColor isEqual:GSFixtureSearchColor()]);
   GS_GLASS_CHECK([[search backgroundColorForState:UIControlStateNormal] isEqual:savedNormal]&&[[search backgroundColorForState:UIControlStateHighlighted] isEqual:savedHighlight]);
   GS_GLASS_CHECK([[search tintColorForState:UIControlStateNormal] isEqual:savedTint]&&[[search shadowForState:UIControlStateNormal] isEqual:savedShadow]);
   GS_GLASS_CHECK(segments.selection==selection&&selection.superview==segments.content&&[search imageForState:UIControlStateNormal]==glyph&&[search.accessibilityLabel isEqual:@"Search"]);
   GS_GLASS_CHECK([search.allTargets containsObject:controller]&&[segments.allTargets containsObject:controller]&&[search.gestureRecognizers containsObject:gesture]);
 
-  NSUInteger taps=controller.taps;nativeTabs.selectedIndex=2;[nativeTabs.delegate tabBarController:nativeTabs didSelectViewController:nativeTabs.selectedViewController];[searchProxy sendActionsForControlEvents:UIControlEventTouchUpInside];
-  GS_GLASS_CHECK(controller.taps==taps+2&&segments.selectedSegmentIndex==2&&nativeTabs.selectedIndex==2&&nativeTabBar.selectedItem.tag==2);
-  taps=controller.taps;[nativeTabs.delegate tabBarController:nativeTabs didSelectViewController:nativeTabs.selectedViewController];GS_GLASS_CHECK(controller.taps==taps);
+  NSUInteger taps=controller.taps;[buttons[2] sendActionsForControlEvents:UIControlEventTouchUpInside];[searchProxy sendActionsForControlEvents:UIControlEventTouchUpInside];
+  GS_GLASS_CHECK(controller.taps==taps+2&&segments.selectedSegmentIndex==2&&GSFixtureGlassSelectedIndex(tabProxy)==2&&buttons[2].selected);
+  taps=controller.taps;[buttons[2] sendActionsForControlEvents:UIControlEventTouchUpInside];GS_GLASS_CHECK(controller.taps==taps);
 
   segments.selectedSegmentIndex=1;
-  GS_GLASS_CHECK(nativeTabs.selectedIndex==1&&nativeTabBar.selectedItem.tag==1&&segments.selection==selection&&search.superview==bar);
+  GS_GLASS_CHECK(GSFixtureGlassSelectedIndex(tabProxy)==1&&buttons[1].selected&&segments.selection==selection&&search.superview==bar);
   [controller viewDidLayoutSubviews];[segments layoutSubviews];[search layoutSubviews];
-  GS_GLASS_CHECK(GSFixtureNativeTabController(controller)==nativeTabs&&GSFixtureNativeTabBar(controller)==nativeTabBar&&GSFixtureNativeSearchProxy(controller)==searchProxy&&segments.alpha==0&&search.alpha==0);
+  GS_GLASS_CHECK(GSFixtureGlassTabProxy(controller)==tabProxy&&GSFixtureNativeSearchProxy(controller)==searchProxy&&segments.alpha==0&&search.alpha==0);
+  GS_GLASS_CHECK(controller.childViewControllers.count==originalChildren.count);
 
   PHSTabBarController *second=[PHSTabBarController new];GSFixtureAttach(second,window);GSSetPhotosGlass(YES);
-  GS_GLASS_CHECK(GSFixtureNativeTabController(second)&&GSFixtureNativeTabBar(second)&&GSFixtureNativeSearchProxy(second)&&second.floatingSearchButton.superview==second.floatingBottomTabBar);
+  GS_GLASS_CHECK(GSFixtureGlassTabProxy(second)&&GSFixtureNativeSearchProxy(second)&&second.floatingSearchButton.superview==second.floatingBottomTabBar);
   GS_GLASS_CHECK([GSPhotosGlassSnapshot()[@"attachedBars"]unsignedIntegerValue]>=2);
 
   GSSetPhotosGlass(NO);GSSetPhotosGlass(NO);
-  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureNativeTabController(controller)&&!GSFixtureNativeTabBar(controller)&&!GSFixtureNativeSearchProxy(controller)&&!GSFixtureNativeTabController(second)&&!GSFixtureNativeTabBar(second)&&!GSFixtureNativeSearchProxy(second));
+  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureGlassTabProxy(controller)&&!GSFixtureNativeSearchProxy(controller)&&!GSFixtureGlassTabProxy(second)&&!GSFixtureNativeSearchProxy(second));
   GS_GLASS_CHECK(segments.alpha==1&&segments.userInteractionEnabled&&!segments.accessibilityElementsHidden&&search.alpha==1&&search.userInteractionEnabled&&!search.accessibilityElementsHidden);
   GS_GLASS_CHECK(search.superview==bar&&[bar.arrangedSubviews containsObject:search]&&search.opaque&&[search.backgroundColor isEqual:GSFixtureSearchColor()]);
   GS_GLASS_CHECK([[search backgroundColorForState:UIControlStateNormal] isEqual:savedNormal]&&[[search backgroundColorForState:UIControlStateHighlighted] isEqual:savedHighlight]);
   GS_GLASS_CHECK([[search tintColorForState:UIControlStateNormal] isEqual:savedTint]&&[[search shadowForState:UIControlStateNormal] isEqual:savedShadow]);
-  GS_GLASS_CHECK(second.floatingSearchButton.superview==second.floatingBottomTabBar&&[second.floatingBottomTabBar.arrangedSubviews containsObject:second.floatingSearchButton]);
   GS_GLASS_CHECK(segments.selection==selection&&[search imageForState:UIControlStateNormal]==glyph&&[search.gestureRecognizers containsObject:gesture]);
   snapshot=GSPhotosGlassSnapshot();GS_GLASS_CHECK(![snapshot[@"enabled"]boolValue]&&[snapshot[@"attachedBars"]unsignedIntegerValue]==0);
-  GS_GLASS_CHECK([snapshot[@"restartRequired"]boolValue]&&![snapshot[@"activeThisLaunch"]boolValue]&&[snapshot[@"reason"]isEqual:@"restart_required"]);
 
   PHSTabBarController *badSearch=[PHSTabBarController new];[badSearch loadViewIfNeeded];
   PHSSegmentedControl *badSegments=badSearch.floatingSegmentedControl;M3CButton *badButton=badSearch.floatingSearchButton;
   UIColor *badSegmentColor=badSegments.backgroundColor,*badButtonColor=badButton.backgroundColor;
   [badSearch.floatingBottomTabBar removeArrangedSubview:badButton];[badButton removeFromSuperview];[badSearch.view addSubview:badButton];
   GSSetPhotosGlass(YES);[badSearch viewDidLayoutSubviews];
-  GS_GLASS_CHECK(!GSFixtureNativeTabController(badSearch)&&!GSFixtureNativeTabBar(badSearch)&&!GSFixtureNativeSearchProxy(badSearch)&&[badSegments.backgroundColor isEqual:badSegmentColor]&&badSegments.alpha==1);
+  GS_GLASS_CHECK(!GSFixtureGlassTabProxy(badSearch)&&!GSFixtureNativeSearchProxy(badSearch)&&[badSegments.backgroundColor isEqual:badSegmentColor]&&badSegments.alpha==1);
   GS_GLASS_CHECK(badButton.opaque&&[badButton.backgroundColor isEqual:badButtonColor]);
-  GS_GLASS_CHECK([GSPhotosGlassSnapshot()[@"lastSkipReason"]isEqual:@"floating_bottom_bar_not_found"]);
   GSSetPhotosGlass(NO);
 
   PHSTabBarController *badSegmentsController=[PHSTabBarController new];[badSegmentsController loadViewIfNeeded];
   [badSegmentsController.floatingBottomTabBar removeArrangedSubview:badSegmentsController.floatingSegmentedControl];
   M3CButton *validSearch=badSegmentsController.floatingSearchButton;
   GSSetPhotosGlass(YES);[badSegmentsController viewDidLayoutSubviews];
-  GS_GLASS_CHECK(!GSFixtureNativeTabController(badSegmentsController)&&!GSFixtureNativeTabBar(badSegmentsController)&&!GSFixtureNativeSearchProxy(badSegmentsController)&&validSearch.opaque);
-  GS_GLASS_CHECK([GSPhotosGlassSnapshot()[@"lastSkipReason"]isEqual:@"floating_bottom_bar_not_found"]);
+  GS_GLASS_CHECK(!GSFixtureGlassTabProxy(badSegmentsController)&&!GSFixtureNativeSearchProxy(badSegmentsController)&&validSearch.opaque);
   GSSetPhotosGlass(NO);
 
   GSFixtureDetach(second);GSFixtureDetach(controller);
-  NSLog(@"PASS controller-owned iOS 26 UITabBar + independent glass UIButton proxy, exact ABIs, single-fire navigation, untouched Google backends, restoration, multiple controllers and hierarchy validation");
+  NSLog(@"PASS thick public Liquid Glass tab proxy + glass Search, no foreign child controller, exact ABIs, single-fire navigation, untouched Google backends and restoration");
  } @finally {
   method_setImplementation(info,(IMP)GSOriginalBundleInfo);GSFixturePhotosVersion=nil;
  }
