@@ -17,7 +17,8 @@ Changing only `glassType` missed the native glass colors, shadows and opacity
 configuration. Only the marked button's `isGlassEnabled` and material view's
 `isGlass` gates are overridden. The host's `UIDesignRequiresCompatibility=true`
 and global `M3CLiquidGlass` gate remain intact. Opt-out reapplies the original
-`phs_brandIconTonalRound` styling; inactive glass-specific style tokens can remain
+`phs_brandIconTonalRound` styling plus Photos' saved normal/highlight backgrounds,
+normal tint and elevation shadow; inactive glass-specific style tokens can remain
 in the native button's tables until destruction or the next glass application.
 
 7.92.0 static evidence (hashes and method ABIs: `objc/manifest.json` and indexes):

@@ -20,6 +20,8 @@ static NSString *GSLastSkip;
 @property(nonatomic,weak) UIVisualEffectView *nativeEffect;
 @property(nonatomic,strong) UIVisualEffectView *effect;
 @property(nonatomic,strong) UIColor *controlColor,*shadowColor,*contentColor;
+@property(nonatomic,strong) UIColor *searchColor,*searchHighlightedColor,*searchTint;
+@property(nonatomic,strong) id searchShadow;
 @property(nonatomic) BOOL controlOpaque,shadowOpaque,contentOpaque,controlClips,adaptive,changing;
 @property(nonatomic) double elevation;
 @end
@@ -31,6 +33,8 @@ static id GSGet(id object,NSString *name){
 }
 static NSInteger GSInteger(id object,NSString *name){return ((NSInteger(*)(id,SEL))objc_msgSend)(object,NSSelectorFromString(name));}
 static void GSCall(id object,NSString *name){((void(*)(id,SEL))objc_msgSend)(object,NSSelectorFromString(name));}
+static id GSStateValue(id object,NSString *name,UIControlState state){return ((id(*)(id,SEL,NSUInteger))objc_msgSend)(object,NSSelectorFromString(name),state);}
+static void GSSetStateValue(id object,NSString *name,id value,UIControlState state){((void(*)(id,SEL,id,NSUInteger))objc_msgSend)(object,NSSelectorFromString(name),value,state);}
 static double GSElevation(id shadow){return ((double(*)(id,SEL))objc_msgSend)(shadow,NSSelectorFromString(@"mdc_currentElevation"));}
 static void GSSetElevation(id shadow,double value){((void(*)(id,SEL,double))objc_msgSend)(shadow,NSSelectorFromString(@"setElevation:"),value);}
 static BOOL GSAdaptive(id shadow){return ((BOOL(*)(id,SEL))objc_msgSend)(shadow,NSSelectorFromString(@"adaptiveBackgroundColorEnabled"));}
@@ -63,6 +67,12 @@ static NSString *GSUnavailableReason(void){
    @[@"M3CButton",@"glassType",@"q16@0:8"],
    @[@"M3CButton",@"isGlassEnabled",@"B16@0:8"],
    @[@"M3CButton",@"glassEffectView",@"@16@0:8"],
+   @[@"M3CButton",@"backgroundColorForState:",@"@24@0:8Q16"],
+   @[@"M3CButton",@"shadowForState:",@"@24@0:8Q16"],
+   @[@"M3CButton",@"tintColorForState:",@"@24@0:8Q16"],
+   @[@"M3CButton",@"setBackgroundColor:forState:",@"v32@0:8@16Q24"],
+   @[@"M3CButton",@"setShadow:forState:",@"v32@0:8@16Q24"],
+   @[@"M3CButton",@"setTintColor:forState:",@"v32@0:8@16Q24"],
    @[@"M3CMaterialGlassEffectView",@"isGlass",@"B16@0:8"],
    @[@"M3CMaterialGlassEffectView",@"glass",@"@16@0:8"],
    @[@"M3CMaterialGlassEffectView",@"updateGlassEffect",@"v16@0:8"],
@@ -92,7 +102,15 @@ static void GSRestore(GSPhotosGlassPair *pair){
  GSSetAdaptive(pair.shadow,pair.adaptive);GSSetElevation(pair.shadow,pair.elevation);
  // Reapply the same native style used by createFloatingSearchButton. This also
  // recomputes normal state colors and shadows; changing glassType alone does not.
- if(ownsSearch)GSCall(pair.search,@"phs_brandIconTonalRound");
+ if(ownsSearch){
+  GSCall(pair.search,@"phs_brandIconTonalRound");
+  // Photos overrides the tonal defaults after creating this button. Preserve
+  // those dynamic colors and elevation shadow as well as the native style.
+  GSSetStateValue(pair.search,@"setBackgroundColor:forState:",pair.searchColor,UIControlStateNormal);
+  GSSetStateValue(pair.search,@"setBackgroundColor:forState:",pair.searchHighlightedColor,UIControlStateHighlighted);
+  GSSetStateValue(pair.search,@"setTintColor:forState:",pair.searchTint,UIControlStateNormal);
+  GSSetStateValue(pair.search,@"setShadow:forState:",pair.searchShadow,UIControlStateNormal);
+ }
  if(pair.nativeEffect&&GSGet(pair.search,@"glassEffectView")!=pair.nativeEffect)GSCall(pair.nativeEffect,@"updateGlassEffect");
  if(objc_getAssociatedObject(pair.controller,&GSGlassPairKey)==pair)objc_setAssociatedObject(pair.controller,&GSGlassPairKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
  [GSPairs removeObject:pair];
@@ -153,6 +171,10 @@ static void GSUpdateController(UIViewController *controller){
  GSPhotosGlassPair *pair=[GSPhotosGlassPair new];pair.controller=controller;pair.bar=bar;pair.segments=segments;pair.search=search;
  pair.shadow=shadow;pair.content=content;pair.nativeEffect=native;
  pair.controlColor=segments.backgroundColor;pair.shadowColor=shadow.backgroundColor;pair.contentColor=content.backgroundColor;
+ pair.searchColor=GSStateValue(search,@"backgroundColorForState:",UIControlStateNormal);
+ pair.searchHighlightedColor=GSStateValue(search,@"backgroundColorForState:",UIControlStateHighlighted);
+ pair.searchTint=GSStateValue(search,@"tintColorForState:",UIControlStateNormal);
+ pair.searchShadow=GSStateValue(search,@"shadowForState:",UIControlStateNormal);
  pair.controlOpaque=segments.opaque;pair.shadowOpaque=shadow.opaque;pair.contentOpaque=content.opaque;pair.controlClips=segments.clipsToBounds;
  pair.adaptive=GSAdaptive(shadow);pair.elevation=GSElevation(shadow);
  // Configure the material's shape through UIKit, without clipping its edge/shadow.
@@ -230,7 +252,7 @@ void GSSetPhotosGlass(BOOL enabled){
 NSDictionary *GSPhotosGlassSnapshot(void){
  if(!NSThread.isMainThread){__block NSDictionary *snapshot;dispatch_sync(dispatch_get_main_queue(),^{snapshot=GSPhotosGlassSnapshot();});return snapshot;}
  NSUInteger attached=0;
- for(GSPhotosGlassPair *pair in GSPairs.allObjects)if(pair.effect.superview==pair.segments&&pair.nativeEffect.superview==pair.search)attached++;
+ for(GSPhotosGlassPair *pair in GSPairs.allObjects)if(pair.segments&&pair.search&&pair.effect.superview==pair.segments&&pair.nativeEffect.superview==pair.search)attached++;
  NSString *unavailable=GSUnavailableReason();
  return @{@"enabled":@(GSPhotosGlassEnabled()),@"available":@(unavailable==nil),@"hooksInstalled":@(GSInstalled),
   @"controllersSeen":@(GSControllers.count),@"attachedBars":@(attached),

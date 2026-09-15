@@ -13,6 +13,14 @@ static UIColor *GSFixtureThemeSegmentColor(void){return [UIColor colorWithRed:0.
 static UIColor *GSFixtureThemeShadowColor(void){return [UIColor colorWithRed:0.82 green:0.89 blue:0.98 alpha:1.0];}
 static UIColor *GSFixtureThemeContentColor(void){return [UIColor colorWithRed:0.95 green:0.97 blue:1.0 alpha:1.0];}
 static UIColor *GSFixtureSearchColor(void){return [UIColor colorWithRed:0.93 green:0.93 blue:0.95 alpha:1.0];}
+static UIColor *GSFixtureBrandNormalColor(void){return [UIColor colorWithRed:0.90 green:0.90 blue:0.92 alpha:1.0];}
+static UIColor *GSFixtureBrandHighlightColor(void){return [UIColor colorWithRed:0.84 green:0.84 blue:0.87 alpha:1.0];}
+static UIColor *GSFixtureBrandTintColor(void){return [UIColor colorWithRed:0.20 green:0.20 blue:0.22 alpha:1.0];}
+static id GSFixtureBrandShadow(void){return @"brand-shadow";}
+static UIColor *GSFixturePhotosNormalColor(void){return [UIColor colorWithRed:0.88 green:0.93 blue:1.0 alpha:1.0];}
+static UIColor *GSFixturePhotosHighlightColor(void){return [UIColor colorWithRed:0.78 green:0.87 blue:0.99 alpha:1.0];}
+static UIColor *GSFixturePhotosTintColor(void){return [UIColor colorWithRed:0.08 green:0.36 blue:0.86 alpha:1.0];}
+static id GSFixturePhotosShadow(void){return @"photos-search-shadow";}
 
 @interface PHSShadowView : UIView {
  double _elevation;
@@ -103,18 +111,32 @@ static UIColor *GSFixtureSearchColor(void){return [UIColor colorWithRed:0.93 gre
 @property(nonatomic) NSUInteger normalBrandCalls;
 @property(nonatomic) NSUInteger glassBrandCalls;
 @property(nonatomic) NSUInteger glassBrandNormalPasses;
+@property(nonatomic,strong) NSMutableDictionary<NSNumber *,id> *fixtureBackgroundColors;
+@property(nonatomic,strong) NSMutableDictionary<NSNumber *,id> *fixtureShadows;
+@property(nonatomic,strong) NSMutableDictionary<NSNumber *,id> *fixtureTintColors;
 - (_Bool)isGlassEnabled;
 - (void)phs_brandIconTonalRound;
 - (void)phs_brandIconTonalGlassRound;
+- (id)backgroundColorForState:(NSUInteger)state;
+- (void)setBackgroundColor:(id)value forState:(NSUInteger)state;
+- (id)shadowForState:(NSUInteger)state;
+- (void)setShadow:(id)value forState:(NSUInteger)state;
+- (id)tintColorForState:(NSUInteger)state;
+- (void)setTintColor:(id)value forState:(NSUInteger)state;
 @end
 static void GSFixtureApplyNormalSearchStyle(M3CButton *button){
  button.glassType=0;button.backgroundColor=GSFixtureSearchColor();button.opaque=YES;button.layer.shadowOpacity=0.24f;
+ [button setBackgroundColor:GSFixtureBrandNormalColor() forState:UIControlStateNormal];
+ [button setBackgroundColor:GSFixtureBrandHighlightColor() forState:UIControlStateHighlighted];
+ [button setShadow:GSFixtureBrandShadow() forState:UIControlStateNormal];
+ [button setTintColor:GSFixtureBrandTintColor() forState:UIControlStateNormal];
  button.glassEffectView.glass.backgroundOpacity=1.0;button.glassEffectView.glass.tintColor=GSFixtureSearchColor();
  [button.glassEffectView updateGlassEffect];
 }
 @implementation M3CButton
 - (instancetype)initWithFrame:(CGRect)frame{
  if((self=[super initWithFrame:frame])){
+  self.fixtureBackgroundColors=[NSMutableDictionary dictionary];self.fixtureShadows=[NSMutableDictionary dictionary];self.fixtureTintColors=[NSMutableDictionary dictionary];
   self.backgroundColor=GSFixtureSearchColor();self.opaque=YES;self.layer.shadowOpacity=0.24f;
   self.glassEffectView=[[M3CMaterialGlassEffectView alloc]initWithEffect:nil];
   self.glassEffectView.glass=[M3CMaterialGlassEffect new];self.glassEffectView.userInteractionEnabled=NO;
@@ -125,6 +147,12 @@ static void GSFixtureApplyNormalSearchStyle(M3CButton *button){
 - (void)layoutSubviews{[super layoutSubviews];self.glassEffectView.frame=self.bounds;}
 - (NSInteger)glassType{return self.glassEffectView.glass.type;}
 - (void)setGlassType:(NSInteger)value{self.glassEffectView.glass.type=value;}
+- (id)backgroundColorForState:(NSUInteger)state{return self.fixtureBackgroundColors[@(state)];}
+- (void)setBackgroundColor:(id)value forState:(NSUInteger)state{if(value)self.fixtureBackgroundColors[@(state)]=value;else [self.fixtureBackgroundColors removeObjectForKey:@(state)];}
+- (id)shadowForState:(NSUInteger)state{return self.fixtureShadows[@(state)];}
+- (void)setShadow:(id)value forState:(NSUInteger)state{if(value)self.fixtureShadows[@(state)]=value;else [self.fixtureShadows removeObjectForKey:@(state)];}
+- (id)tintColorForState:(NSUInteger)state{return self.fixtureTintColors[@(state)];}
+- (void)setTintColor:(id)value forState:(NSUInteger)state{if(value)self.fixtureTintColors[@(state)]=value;else [self.fixtureTintColors removeObjectForKey:@(state)];}
 - (_Bool)isGlassEnabled{return NO;}
 - (void)phs_brandIconTonalRound{
  self.normalBrandCalls++;GSFixtureApplyNormalSearchStyle(self);
@@ -162,6 +190,13 @@ static void GSFixtureApplyNormalSearchStyle(M3CButton *button){
  [super viewDidLoad];self.view.backgroundColor=UIColor.systemBackgroundColor;
  self.floatingSegmentedControl=[[PHSSegmentedControl alloc]initWithFrame:CGRectMake(0,0,260,56)];
  self.floatingSearchButton=[[M3CButton alloc]initWithFrame:CGRectMake(0,0,56,56)];
+ [self.floatingSearchButton phs_brandIconTonalRound];
+ // createFloatingSearchButton reapplies Photos-owned state values after the
+ // generic brand. These must survive a glass round-trip exactly.
+ [self.floatingSearchButton setShadow:GSFixturePhotosShadow() forState:UIControlStateNormal];
+ [self.floatingSearchButton setBackgroundColor:GSFixturePhotosNormalColor() forState:UIControlStateNormal];
+ [self.floatingSearchButton setBackgroundColor:GSFixturePhotosHighlightColor() forState:UIControlStateHighlighted];
+ [self.floatingSearchButton setTintColor:GSFixturePhotosTintColor() forState:UIControlStateNormal];
  self.floatingSearchButton.accessibilityLabel=@"Search";
  [self.floatingSearchButton setImage:[UIImage systemImageNamed:@"magnifyingglass"] forState:UIControlStateNormal];
  [self.floatingSearchButton addTarget:self action:@selector(tap:) forControlEvents:UIControlEventTouchUpInside];
@@ -214,6 +249,12 @@ static BOOL GSFixturePhotosGlassContracts(void){
   @[@"M3CButton",@"glassType",@"q16@0:8"],
   @[@"M3CButton",@"isGlassEnabled",@"B16@0:8"],
   @[@"M3CButton",@"glassEffectView",@"@16@0:8"],
+  @[@"M3CButton",@"backgroundColorForState:",@"@24@0:8Q16"],
+  @[@"M3CButton",@"setBackgroundColor:forState:",@"v32@0:8@16Q24"],
+  @[@"M3CButton",@"shadowForState:",@"@24@0:8Q16"],
+  @[@"M3CButton",@"setShadow:forState:",@"v32@0:8@16Q24"],
+  @[@"M3CButton",@"tintColorForState:",@"@24@0:8Q16"],
+  @[@"M3CButton",@"setTintColor:forState:",@"v32@0:8@16Q24"],
   @[@"M3CMaterialGlassEffectView",@"isGlass",@"B16@0:8"],
   @[@"M3CMaterialGlassEffectView",@"glass",@"@16@0:8"],
   @[@"M3CMaterialGlassEffectView",@"updateGlassEffect",@"v16@0:8"],
@@ -276,7 +317,13 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   PHSTabBarController *controller=[PHSTabBarController new];GSFixtureAttach(controller,window);
   PHSSegmentedControl *segments=controller.floatingSegmentedControl;M3CButton *search=controller.floatingSearchButton;
   UIView *selection=segments.selection;UIImage *glyph=[search imageForState:UIControlStateNormal];UITapGestureRecognizer *gesture=controller.fixtureGesture;
-  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixturePillEffect(segments)&&search.glassType==0&&search.opaque&&search.glassBrandCalls==0);
+  id savedNormal=[search backgroundColorForState:UIControlStateNormal];
+  id savedHighlight=[search backgroundColorForState:UIControlStateHighlighted];
+  id savedTint=[search tintColorForState:UIControlStateNormal];id savedShadow=[search shadowForState:UIControlStateNormal];
+  NSUInteger initialNormalBrandCalls=search.normalBrandCalls;
+  GS_GLASS_CHECK([savedNormal isEqual:GSFixturePhotosNormalColor()]&&[savedHighlight isEqual:GSFixturePhotosHighlightColor()]&&[savedTint isEqual:GSFixturePhotosTintColor()]&&[savedShadow isEqual:GSFixturePhotosShadow()]);
+  GS_GLASS_CHECK(![savedNormal isEqual:GSFixtureBrandNormalColor()]&&![savedHighlight isEqual:GSFixtureBrandHighlightColor()]&&![savedTint isEqual:GSFixtureBrandTintColor()]&&![savedShadow isEqual:GSFixtureBrandShadow()]);
+  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixturePillEffect(segments)&&search.glassType==0&&search.opaque&&search.glassBrandCalls==0&&initialNormalBrandCalls==1);
   GS_GLASS_CHECK([search.allTargets containsObject:controller]&&[segments.allTargets containsObject:controller]&&[search.gestureRecognizers containsObject:gesture]);
 
   toggle.on=YES;[toggle sendActionsForControlEvents:UIControlEventValueChanged];
@@ -292,7 +339,7 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   GS_GLASS_CHECK([segments.backgroundColor isEqual:UIColor.clearColor]&&!segments.opaque&&!segments.clipsToBounds);
   GS_GLASS_CHECK(segments.shadow.elevation==0&&!segments.shadow.adaptiveBackgroundColorEnabled&&[segments.shadow.backgroundColor isEqual:UIColor.clearColor]&&!segments.shadow.opaque);
   GS_GLASS_CHECK([segments.content.backgroundColor isEqual:UIColor.clearColor]&&!segments.content.opaque);
-  GS_GLASS_CHECK(search.glassBrandCalls>0&&search.glassBrandNormalPasses==search.glassBrandCalls&&search.normalBrandCalls==0&&search.glassType==1&&[search isGlassEnabled]&&[search.glassEffectView isGlass]);
+  GS_GLASS_CHECK(search.glassBrandCalls>0&&search.glassBrandNormalPasses==search.glassBrandCalls&&search.normalBrandCalls==initialNormalBrandCalls&&search.glassType==1&&[search isGlassEnabled]&&[search.glassEffectView isGlass]);
   GS_GLASS_CHECK([search.glassEffectView.effect isKindOfClass:NSClassFromString(@"UIGlassEffect")]&&search.glassEffectView.lastRequestedStyle==1&&[search.backgroundColor isEqual:UIColor.clearColor]&&!search.opaque&&search.layer.shadowOpacity==0);
   GS_GLASS_CHECK(search.glassEffectView.glass.backgroundOpacity>0&&search.glassEffectView.glass.backgroundOpacity<1&&CGColorGetAlpha(search.glassEffectView.glass.tintColor.CGColor)<1.0);
   GS_GLASS_CHECK(segments.selection==selection&&selection.superview==segments.content&&[search imageForState:UIControlStateNormal]==glyph&&[search.accessibilityLabel isEqual:@"Search"]);
@@ -344,12 +391,16 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   GS_GLASS_CHECK(GSFixturePillEffect(second.floatingSegmentedControl)&&second.floatingSearchButton.glassType==1&&second.floatingSearchButton.glassEffectView.effect);
   GS_GLASS_CHECK([GSPhotosGlassSnapshot()[@"attachedBars"]unsignedIntegerValue]>=2);
 
+  NSUInteger normalBeforeDisable=search.normalBrandCalls;
   GSSetPhotosGlass(NO);GSSetPhotosGlass(NO);
   GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixturePillEffect(segments)&&!GSFixturePillEffect(second.floatingSegmentedControl));
   GS_GLASS_CHECK([segments.backgroundColor isEqual:GSFixtureThemeSegmentColor()]&&segments.opaque&&segments.clipsToBounds);
   GS_GLASS_CHECK([segments.shadow.backgroundColor isEqual:GSFixtureThemeShadowColor()]&&segments.shadow.opaque&&segments.shadow.elevation==3&&segments.shadow.adaptiveBackgroundColorEnabled);
   GS_GLASS_CHECK([segments.content.backgroundColor isEqual:GSFixtureThemeContentColor()]&&segments.content.opaque);
   GS_GLASS_CHECK(search.glassType==0&&![search isGlassEnabled]&&![search.glassEffectView isGlass]&&!search.glassEffectView.effect&&search.opaque&&[search.backgroundColor isEqual:GSFixtureSearchColor()]);
+  GS_GLASS_CHECK([[search backgroundColorForState:UIControlStateNormal] isEqual:savedNormal]&&[[search backgroundColorForState:UIControlStateHighlighted] isEqual:savedHighlight]);
+  GS_GLASS_CHECK([[search tintColorForState:UIControlStateNormal] isEqual:savedTint]&&[[search shadowForState:UIControlStateNormal] isEqual:savedShadow]);
+  GS_GLASS_CHECK(search.normalBrandCalls==normalBeforeDisable+1);
   GS_GLASS_CHECK(search.glassEffectView.glass.backgroundOpacity==1.0&&CGColorGetAlpha(search.glassEffectView.glass.tintColor.CGColor)==1.0);
   GS_GLASS_CHECK(second.floatingSearchButton.glassType==0&&second.floatingSearchButton.opaque&&!second.floatingSearchButton.glassEffectView.effect);
   GS_GLASS_CHECK(segments.selection==selection&&[search imageForState:UIControlStateNormal]==glyph&&[search.gestureRecognizers containsObject:gesture]);
