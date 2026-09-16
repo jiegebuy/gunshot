@@ -1,6 +1,6 @@
 Package: dev.tqmane.gunshot.jailed
 Name: GoToHP Jailed
-Version: 0.2.2
+Version: 0.2.3
 Architecture: iphoneos-arm
 Description: In-app GoToHP uploader for IPA injection and LiveContainer
 Maintainer: tqmane
