@@ -132,7 +132,7 @@ int main(void){@autoreleasepool{
  // Exercise the failure AFTER one successful chunk. The error must survive the
  // exporter's inner autoreleasepool and ARC's out-parameter writeback on the
  // asset-import queue (the exact retain that faulted on the device).
- dispatch_sync(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   RejectAppend=YES;
   NSError *error=nil;
   assert(!GSImportPhotoIdentifier(@"chunk-failure",@"fixture@example.com",@"original",&error));
@@ -151,6 +151,7 @@ int main(void){@autoreleasepool{
   }}
   assert(Written==before);
  }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,60*NSEC_PER_SEC))==0);
  NSLog(@"PASS late chunk error lifetime, cancellation, recovery and 25000 source-deduplicated imports");
  NSLog(@"PASS 60 HEIC/HEIF originals, Live Photo resources, exact IPC bytes/timestamp, unreadable original isolation and bounded concurrent native exports");
 }}
