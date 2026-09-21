@@ -9,6 +9,7 @@
 static NSUInteger Queued,Written;
 static BOOL IncludeUnreadable;
 static atomic_int ActiveExports,PeakExports;
+static NSString *FetchQueueLabel;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
@@ -26,7 +27,7 @@ static NSData *OriginalBytes(BOOL movie){
 @implementation PHAsset
 + (PHFetchResult *)fetchAssetsWithLocalIdentifiers:(NSArray *)ids options:(id)options{
  assert(!NSThread.isMainThread&&ids.count==1);
- NSString *identifier=ids.firstObject;PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;
+ NSString *identifier=ids.firstObject;FetchQueueLabel=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;
  asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];asset.mediaType=PHAssetMediaTypeImage;
  if(identifier.intValue==5)asset.mediaSubtypes=PHAssetMediaSubtypePhotoLive;
  PHFetchResult *result=[PHFetchResult new];result.items=@[asset];return result;
@@ -37,6 +38,7 @@ static NSData *OriginalBytes(BOOL movie){
 @end
 @implementation PHAssetResource
 + (NSArray *)assetResourcesForAsset:(PHAsset *)asset{
+ if(![asset.localIdentifier isEqual:@"native"]){NSString *label=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));assert([label isEqual:FetchQueueLabel]);}
  PHAssetResource *photo=[PHAssetResource new];photo.type=PHAssetResourceTypePhoto;
  photo.originalFilename=asset.localIdentifier.intValue%2?@"original.HEIC":@"original.heif";
  photo.unreadable=IncludeUnreadable&&asset.localIdentifier.intValue==30;

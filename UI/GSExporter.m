@@ -87,7 +87,10 @@ NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier,NSString *acc
   NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
   if(![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&failure])return;
   @try {
-   NSArray *files=GSExportAsset(asset,directory,&failure);
+   // asset was resolved on dev.tqmane.gunshot.asset-import. Keep every PhotoKit
+   // operation that touches it on this same serial queue; only immutable identifiers
+   // may cross queues. GSExportAsset remains for callers that already own an asset.
+   NSArray *files=GSWriteOriginalResources(asset,directory,&failure);
    if(files&&authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
    if(files)job=GSImportFilesWithSource(files,account,quality,asset.creationDate,localIdentifier,&failure);
   } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
