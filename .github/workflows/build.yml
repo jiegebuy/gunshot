@@ -14,6 +14,18 @@ on:
 permissions:
   contents: read
 jobs:
+  photo-import:
+    name: Photo import regression
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: Exporter error lifetime and large library
+        run: |
+          mkdir -p .build
+          clang -O2 -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m UI/GSExporter.m tests/exporter_batch.m -o .build/exporter-batch-test
+          NSZombieEnabled=YES .build/exporter-batch-test
   core:
     runs-on: ubuntu-latest
     steps:
@@ -203,8 +215,6 @@ jobs:
         run: |
           clang -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m tests/batch_import.m -o .build/batch-import-test
           .build/batch-import-test
-          clang -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m UI/GSExporter.m tests/exporter_batch.m -o .build/exporter-batch-test
-          .build/exporter-batch-test
       - name: UIKit settings presentation smoke
         timeout-minutes: 8
         run: bash scripts/test-settings-ui.sh

@@ -8,6 +8,9 @@
 // as successfully decoding these bytes.
 static NSUInteger Queued,Written;
 static BOOL IncludeUnreadable;
+static BOOL RejectAppend;
+static NSUInteger Cancelled;
+static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
 static NSString *FetchQueueLabel;
 static NSArray *ExpectedResources;
@@ -81,6 +84,10 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   return @{@"id":@"fixture-job"};
  }
  if([op isEqual:@"append"]){
+  if(RejectAppend&&[request[@"offset"]unsignedIntegerValue]>=32768){
+   NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late chunk rejection"}];
+   LastAppendError=failure;if(error)*error=failure;return nil;
+  }
   NSMutableData *bytes=Received[[request[@"index"]unsignedIntegerValue]];assert(bytes.length==[request[@"offset"]unsignedIntegerValue]);
   NSData *chunk=[[NSData alloc]initWithBase64EncodedString:request[@"data"]options:0];assert(chunk.length>0&&chunk.length<=32768);[bytes appendData:chunk];return @{};
  }
@@ -91,6 +98,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   }
   Queued++;return @{@"id":@"fixture-job"};
  }
+ if([op isEqual:@"cancel"]){Cancelled++;return @{};}
  assert(NO);return nil;
 }
 static NSDictionary *Run(void){
@@ -121,5 +129,28 @@ int main(void){@autoreleasepool{
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
  assert(atomic_load(&PeakExports)==1);
+ // Exercise the failure AFTER one successful chunk. The error must survive the
+ // exporter's inner autoreleasepool and ARC's out-parameter writeback on the
+ // asset-import queue (the exact retain that faulted on the device).
+ dispatch_sync(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  RejectAppend=YES;
+  NSError *error=nil;
+  assert(!GSImportPhotoIdentifier(@"chunk-failure",@"fixture@example.com",@"original",&error));
+  assert(error&&LastAppendError==error);
+  assert([error.domain isEqual:@"Gunshot.IPC"]&&error.code==73&&Cancelled==1);
+  assert(!GSImportPhotoIdentifier(@"chunk-failure-no-error",@"fixture@example.com",@"original",nil));
+  assert(Cancelled==2);
+  RejectAppend=NO;
+  assert(GSImportPhotoIdentifier(@"after-chunk-failure",@"fixture@example.com",@"original",&error));
+  assert(!error);
+  NSUInteger before=Written;
+  for(NSUInteger i=0;i<25000;i++){@autoreleasepool{
+   NSString *identifier=[NSString stringWithFormat:@"large-library-%lu",(unsigned long)i];
+   SourceJobs[identifier]=@"fixture-job";
+   assert(GSImportPhotoIdentifier(identifier,@"fixture@example.com",@"original",nil));
+  }}
+  assert(Written==before);
+ }});
+ NSLog(@"PASS late chunk error lifetime, cancellation, recovery and 25000 source-deduplicated imports");
  NSLog(@"PASS 60 HEIC/HEIF originals, Live Photo resources, exact IPC bytes/timestamp, unreadable original isolation and bounded concurrent native exports");
 }}

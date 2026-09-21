@@ -33,11 +33,16 @@ NSArray<NSURL *> *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error)
  if(error)*error=failure;return files;
 }
 static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSString *sourceID,NSError **error){
+ // The caller's NSError ** is autoreleasing storage. Never write it from the
+ // per-chunk pool: draining that pool would free the error before ARC retains
+ // it in the caller. Keep failures strongly owned until all chunk pools exit.
+ NSError *failure=nil;
+ @try {
  NSMutableArray *resources=[NSMutableArray array];
- for(NSURL *u in files){NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:u.path error:error];if(!attrs||![attrs[NSFileType]isEqual:NSFileTypeRegular])return nil;[resources addObject:@{@"name":u.lastPathComponent,@"size":attrs[NSFileSize]}];}
+ for(NSURL *u in files){NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:u.path error:&failure];if(!attrs||![attrs[NSFileType]isEqual:NSFileTypeRegular])return nil;[resources addObject:@{@"name":u.lastPathComponent,@"size":attrs[NSFileSize]}];}
  NSMutableDictionary *request=[@{@"op":@"begin",@"account":account?:@"",@"quality":quality?:@"original",@"timestamp":@((long long)(date?:NSDate.date).timeIntervalSince1970),@"resources":resources}mutableCopy];
  if(sourceID.length)request[@"sourceID"]=sourceID;
- NSDictionary *begin=GSRequest(request,error);
+ NSDictionary *begin=GSRequest(request,&failure);
  NSString *identifier=begin[@"id"];if(!identifier)return nil;
  if([begin[@"duplicate"]boolValue])return identifier;
  BOOL success=NO;
@@ -45,13 +50,14 @@ static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *accou
  for(NSUInteger i=0;i<files.count;i++){
   NSFileHandle *f=[NSFileHandle fileHandleForReadingAtPath:files[i].path];if(!f)return nil;
   @try {unsigned long long offset=0;while(YES){@autoreleasepool{
-   NSData *chunk=[f readDataUpToLength:32768 error:error];if(!chunk)return nil;if(!chunk.length)break;
-   if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@(i),@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},error))return nil;
+   NSData *chunk=[f readDataUpToLength:32768 error:&failure];if(!chunk)return nil;if(!chunk.length)break;
+   if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@(i),@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&failure))return nil;
    offset+=chunk.length;
   }}} @finally {[f closeAndReturnError:nil];}
  }
- NSDictionary *sealed=GSRequest(@{@"op":@"seal",@"id":identifier},error);success=sealed!=nil;return sealed[@"id"];
+ NSDictionary *sealed=GSRequest(@{@"op":@"seal",@"id":identifier},&failure);success=sealed!=nil;return sealed[@"id"];
  } @finally {if(!success)GSRequest(@{@"op":@"cancel",@"id":identifier},nil);}
+ } @finally {if(error)*error=failure;}
 }
 NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){
  return GSImportFilesWithSource(files,account,quality,date,nil,error);
