@@ -306,7 +306,10 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	return map[string]any{"id": id}, nil
 }
 func (e *Engine) appendChunk(j *Job, r Request) error {
-	if j.State != "importing" || r.Index < 0 || r.Index >= len(j.Resources) || len(r.Data) == 0 || len(r.Data) > MaxChunk {
+	return e.appendChunkLimit(j, r, MaxChunk)
+}
+func (e *Engine) appendChunkLimit(j *Job, r Request, limit int) error {
+	if j.State != "importing" || r.Index < 0 || r.Index >= len(j.Resources) || len(r.Data) == 0 || len(r.Data) > limit {
 		return errRequest
 	}
 	f, err := os.OpenFile(filepath.Join(e.jobDir(j.ID), j.Resources[r.Index].Name), os.O_WRONLY, 0600)

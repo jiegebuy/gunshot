@@ -22,6 +22,8 @@ FOUNDATION_EXPORT NSDictionary *GSRequest(NSDictionary *request, NSError **error
 FOUNDATION_EXPORT NSDictionary *GSIPCDiagnosticsSnapshot(void);
 #endif
 #if GS_JAILED
+// In-process only: bounded binary chunks, no JSON/base64 expansion.
+FOUNDATION_EXPORT BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error);
 // Nonblocking, metadata-only; safe while native authorization is in progress.
 FOUNDATION_EXPORT NSDictionary *GSEmbeddedRuntimeSnapshot(void);
 #endif

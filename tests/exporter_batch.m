@@ -18,8 +18,13 @@ static NSString *FetchQueueLabel;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
+#if GS_JAILED
+static const NSUInteger FixtureSize=2097165;
+#else
+static const NSUInteger FixtureSize=70013;
+#endif
 static NSData *OriginalBytes(BOOL movie){
- NSMutableData *bytes=[NSMutableData dataWithLength:70013];uint8_t *p=bytes.mutableBytes;
+ NSMutableData *bytes=[NSMutableData dataWithLength:FixtureSize];uint8_t *p=bytes.mutableBytes;
  for(NSUInteger i=0;i<bytes.length;i++)p[i]=(uint8_t)(i*17+(movie?3:7));
  if(SlashHeavy)memset(p,0xff,bytes.length);
  memcpy(p,"\0\0\0\x18" "ftyp",8);memcpy(p+8,movie?"qt  ":"heic",4);return bytes;
@@ -71,6 +76,16 @@ static NSData *OriginalBytes(BOOL movie){
 }
 @end
 BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread);return [identifier isEqual:@"fixture"];} 
+#if GS_JAILED
+BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error){
+ assert(!NSThread.isMainThread&&data.length>0&&data.length<=1048576);
+ if(RejectAppend&&offset>=32768){
+  NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late binary chunk rejection"}];
+  LastAppendError=failure;if(error)*error=failure;return NO;
+ }
+ NSMutableData *bytes=Received[index];assert(bytes.length==offset);[bytes appendData:data];return YES;
+}
+#endif
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  // Match the real transport boundary instead of accepting oversized mocks.
  assert([NSJSONSerialization dataWithJSONObject:request options:0 error:nil].length<=GS_MAX_JSON);
@@ -85,7 +100,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   assert([request[@"sourceID"]length]>0);
   SourceJobs[request[@"sourceID"]]=@"fixture-job";
   ExpectedResources=request[@"resources"];Received=[NSMutableArray array];
-  for(NSDictionary *resource in ExpectedResources){assert([resource[@"size"]intValue]==70013);[Received addObject:[NSMutableData data]];}
+  for(NSDictionary *resource in ExpectedResources){assert([resource[@"size"]unsignedIntegerValue]==FixtureSize);[Received addObject:[NSMutableData data]];}
   return @{@"id":@"fixture-job"};
  }
  if([op isEqual:@"append"]){

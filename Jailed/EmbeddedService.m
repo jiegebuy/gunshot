@@ -1,4 +1,5 @@
 #import "../Shared/GSLocalization.h"
+#include <limits.h>
 #import "../Shared/IPCProtocol.h"
 #import <UIKit/UIKit.h>
 #import <Network/Network.h>
@@ -86,6 +87,19 @@ static void GSStart(void) {
  // Do not starve path callbacks behind SSO / Google endpoint validation.
  nw_path_monitor_set_queue(GSMonitor,dispatch_queue_create("dev.tqmane.gunshot.network",DISPATCH_QUEUE_SERIAL));nw_path_monitor_start(GSMonitor);
  });
+}
+BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error) {
+ GSStart();__block BOOL accepted=NO;
+ if(identifier.length&&index<2&&offset<=LLONG_MAX&&data.length>0&&data.length<=1048576){
+  dispatch_sync(GSCoreQueue,^{
+   if(GSReady)accepted=GunshotAppend((char *)identifier.UTF8String,(int)index,(long long)offset,(void *)data.bytes,(int)data.length)==1;
+  });
+ }
+ if(!accepted){
+  GSRecord(@{@"lastRequestFailure":@{@"op":@"append",@"code":@"binary_append_failed"}});
+  if(error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:1 userInfo:@{NSLocalizedDescriptionKey:GSL(@"GoToHP request failed. Check the account, storage and queue in this app.")}];
+ }
+ return accepted;
 }
 NSDictionary *GSRequest(NSDictionary *request,NSError **error) {
  GSStart();

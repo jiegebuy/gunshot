@@ -50,10 +50,15 @@ static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *accou
  for(NSUInteger i=0;i<files.count;i++){
   NSFileHandle *f=[NSFileHandle fileHandleForReadingAtPath:files[i].path];if(!f)return nil;
   @try {unsigned long long offset=0;while(YES){@autoreleasepool{
+#if GS_JAILED
+   NSData *chunk=[f readDataUpToLength:1048576 error:&failure];if(!chunk)return nil;if(!chunk.length)break;
+   if(!GSEmbeddedAppend(identifier,i,offset,chunk,&failure))return nil;
+#else
    // JSON escapes '/' in base64. A 32 KiB block of 0xff grows beyond
    // GS_MAX_JSON (60 KB); 16 KiB fits even when every character is escaped.
    NSData *chunk=[f readDataUpToLength:16384 error:&failure];if(!chunk)return nil;if(!chunk.length)break;
    if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@(i),@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&failure))return nil;
+#endif
    offset+=chunk.length;
   }}} @finally {[f closeAndReturnError:nil];}
  }

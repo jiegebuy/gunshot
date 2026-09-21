@@ -35,6 +35,20 @@ int main(void){
  assert(strstr(response,"\"online\":true")!=NULL);
  assert(strstr(response,"\"wifi\":true")!=NULL);
  assert(strstr(response,"\"charging\":false")!=NULL);GunshotFree(response);
+ // Real C -> Go binary import: preserve bytes across a 1 MiB block and tail,
+ // reject replay/oversize, then exercise the normal seal/hash path.
+ response=GunshotRequest("{\"op\":\"conditions\",\"online\":false}","daemon");GunshotFree(response);
+ response=GunshotRequest("{\"op\":\"begin\",\"account\":\"fixture@example.com\",\"quality\":\"original\",\"resources\":[{\"name\":\"binary.tif\",\"size\":1048713}]}","googlephotos");
+ assert(strstr(response,"\"ok\":true"));
+ char *idStart=strstr(response,"\"id\":\"");assert(idStart);char id[33];memcpy(id,idStart+6,32);id[32]=0;GunshotFree(response);
+ unsigned char *bytes=malloc(1048713);assert(bytes);memset(bytes,255,1048713);
+ assert(GunshotAppend(id,0,0,bytes,1048713)==0);
+ assert(GunshotAppend(id,0,0,bytes,1048576)==1);
+ assert(GunshotAppend(id,0,0,bytes,137)==0);
+ assert(GunshotAppend(id,0,1048576,bytes+1048576,137)==1);
+ char seal[128];snprintf(seal,sizeof(seal),"{\"op\":\"seal\",\"id\":\"%s\"}",id);
+ response=GunshotRequest(seal,"googlephotos");assert(strstr(response,"\"ok\":true"));GunshotFree(response);free(bytes);
+ puts("PASS real binary bridge: 1 MiB block, tail, replay rejection and seal");
  puts("PASS real Go bridge rejects numeric conditions and applies JSON booleans");
  puts("PASS jailed source lookup reaches the real core while settings lookup stays denied");
  return 0;

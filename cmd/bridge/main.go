@@ -62,7 +62,9 @@ func GunshotInitialize(path *C.char) C.int {
 		return -1
 	}
 	engine = e
-	if !hostBearerProvider { e.EnableNativeRelay() }
+	if !hostBearerProvider {
+		e.EnableNativeRelay()
+	}
 	go e.Run(context.Background())
 	return 0
 }
@@ -82,4 +84,22 @@ func GunshotRequest(request *C.char, role *C.char) (out *C.char) {
 
 //export GunshotFree
 func GunshotFree(p unsafe.Pointer) { C.free(p) }
-func main()                        {}
+
+//export GunshotAppend
+func GunshotAppend(id *C.char, index C.int, offset C.longlong, data unsafe.Pointer, size C.int) (result C.int) {
+	defer func() {
+		if recover() != nil {
+			result = 0
+		}
+	}()
+	if engine == nil || id == nil || data == nil || size <= 0 || size > service.MaxEmbeddedChunk {
+		return 0
+	}
+	// The call is synchronous; the engine consumes the C-owned bytes before
+	// returning and never retains a pointer into NSData.
+	if engine.AppendEmbedded(C.GoString(id), int(index), int64(offset), unsafe.Slice((*byte)(data), int(size))) {
+		return 1
+	}
+	return 0
+}
+func main() {}
