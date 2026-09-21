@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 #import <Network/Network.h>
 #import "libgotohp.h"
+#import "GSRequestRole.h"
 #import "../UI/GSNativeAccount.h"
 
 // No external IPC in the jailed host. SSO can wait on main, so runtime snapshots
@@ -93,10 +94,10 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error) {
  GSConditions();
  BOOL native=[op isEqual:@"account_native"];
  if(native)GSRecord(@{@"authorization":@"checking"});
- result=GSCall(request,[@[@"begin",@"append",@"seal",@"account_native"]containsObject:op]?"googlephotos":"settings");
+ result=GSCall(request,GSEmbeddedRequestRole(op.UTF8String));
  if(result&&[op isEqual:@"upload_summary"])GSRecord(@{@"uploadSummary":result});
  if(native)GSRecord(@{@"authorization":result?@"validated":@"failed"});
  });
- if(!result&&error)*error=[NSError errorWithDomain:@"Gunshot" code:1 userInfo:@{NSLocalizedDescriptionKey:GSL(@"GoToHP request failed. Check the account, storage and queue in this app.")}];
+ if(!result&&error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:1 userInfo:@{NSLocalizedDescriptionKey:GSL(@"GoToHP request failed. Check the account, storage and queue in this app.")}];
  return result;
 }
