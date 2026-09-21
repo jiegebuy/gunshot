@@ -109,7 +109,7 @@
   "Done": "Xong",
   "Japanese": "Tiếng Nhật",
   "Simplified Chinese": "Tiếng Trung giản thể",
-  	"Vietnamese": "Tiếng Việt",
+  "Vietnamese": "Tiếng Việt",
   "Show unlimited storage": "Hiển thị bộ nhớ không giới hạn",
   "Reopen the profile menu to apply changes. Unlimited storage affects only the display; account limits and upload quality stay unchanged.": "Mở lại menu hồ sơ để áp dụng thay đổi. Bộ nhớ không giới hạn chỉ ảnh hưởng đến việc hiển thị; giới hạn tài khoản và chất lượng tải lên không thay đổi.",
   "GoToHP daemon connection failed.": "Kết nối daemon GoToHP không thành công.",
@@ -133,5 +133,8 @@
   "Open folder": "Mở thư mục",
   "Upload all accessible photos and videos": "Tải lên tất cả ảnh và video có thể truy cập",
   "Add %lu items to the queue? Originals are prepared one at a time. Keep the app open.": "Thêm %lu mục vào hàng đợi? Các bản gốc được chuẩn bị lần lượt. Hãy giữ ứng dụng mở.",
-  "No accessible photos in this album. Check photo permissions.": "Không có ảnh nào có thể truy cập trong album này. Kiểm tra quyền đối với ảnh."
+  "No accessible photos in this album. Check photo permissions.": "Không có ảnh nào có thể truy cập trong album này. Kiểm tra quyền đối với ảnh.",
+  "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Đang chờ tải lên giải phóng dung lượng. Quá trình chuẩn bị sẽ tự tiếp tục. Hãy giữ ứng dụng mở.",
+  "Preparation is waiting. Turn off Pause uploads to continue.": "Đang chờ chuẩn bị. Tắt Tạm dừng tải lên để tiếp tục.",
+  "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng."
 }

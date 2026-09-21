@@ -133,5 +133,8 @@
   "Open folder": "打开文件夹",
   "Upload all accessible photos and videos": "上传所有可读取的媒体",
   "Add %lu items to the queue? Originals are prepared one at a time. Keep the app open.": "是否要添加 %lu 项内容到队列？原图的准备工作将逐一进行，请保持 App 开启",
-  "No accessible photos in this album. Check photo permissions.": "此相册中无可访问的图片，请检查访问权限"
+  "No accessible photos in this album. Check photo permissions.": "此相册中无可访问的图片，请检查访问权限",
+  "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "等待上传释放空间，随后会自动继续准备，请保持 App 开启。",
+  "Preparation is waiting. Turn off Pause uploads to continue.": "准备已等待，请关闭“暂停上传”以继续。",
+  "Not enough space to prepare this original while keeping free space available.": "可用空间不足，无法在保留系统余量的同时准备此原文件。"
 }

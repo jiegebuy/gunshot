@@ -7,5 +7,10 @@ NSString *GSImportFiles(NSArray<NSURL *> *files, NSString *account, NSString *qu
 // persistent queue identity before any original bytes are exported.
 NSString *GSImportPhotoIdentifier(NSString *localIdentifier, NSString *account, NSString *quality, NSError **error);
 typedef BOOL (^GSImportAuthorizationCheck)(void);
+typedef void (^GSImportStorageProgress)(NSDictionary *status);
+NSString *GSImportFilesWithProgress(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,
+ GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error);
+NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier, NSString *account, NSString *quality,
+ GSImportAuthorizationCheck authorization, GSImportStorageProgress progress, NSError **error);
 NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier, NSString *account, NSString *quality,
  GSImportAuthorizationCheck authorization, NSError **error);

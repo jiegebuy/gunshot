@@ -59,8 +59,11 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
    else if(assets){
     // Providers deliberately carry only immutable localIdentifier strings.
     // PHAsset/PHFetchResult objects never survive across our dispatch queues.
-    NSString *job=[item isKindOfClass:NSString.class]?GSImportPhotoIdentifierChecked(item,batch.account,quality,^BOOL{
+    NSString *job=[item isKindOfClass:NSString.class]?GSImportPhotoIdentifierWithProgress(item,batch.account,quality,^BOOL{
      return GSCheckBatchAccount(batch)==nil;
+    },^(NSDictionary *storage){
+     [state addEntriesFromDictionary:storage];GSRecordBatch(state);
+     if(progress){NSDictionary *snapshot=[state copy];dispatch_async(dispatch_get_main_queue(),^{progress(snapshot);});}
     },&error):nil;
     if(!reason)reason=GSCheckBatchAccount(batch);
     if(!reason&&job){processed++;queued++;}
@@ -82,8 +85,12 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
     }
     if(!reason&&files){
      state[@"stage"]=@"queueing";GSRecordBatch(state);
-     NSString *job=GSImportFiles(files,batch.account,quality,date,&error);
-     if(job){processed++;queued++;}else reason=@"queue_rejected";
+     NSString *job=GSImportFilesWithProgress(files,batch.account,quality,date,^BOOL{return GSCheckBatchAccount(batch)==nil;},^(NSDictionary *storage){
+      [state addEntriesFromDictionary:storage];GSRecordBatch(state);
+      if(progress){NSDictionary *snapshot=[state copy];dispatch_async(dispatch_get_main_queue(),^{progress(snapshot);});}
+     },&error);
+     if(!reason)reason=GSCheckBatchAccount(batch);
+     if(!reason&&job){processed++;queued++;}else if(!reason)reason=@"queue_rejected";
     }
     if(scoped)[item stopAccessingSecurityScopedResource];
     [NSFileManager.defaultManager removeItemAtURL:directory error:nil];

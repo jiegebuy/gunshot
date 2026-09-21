@@ -133,5 +133,8 @@
   "Open folder": "フォルダを開く",
   "Upload all accessible photos and videos": "アクセス可能な写真・動画をまとめてアップロード",
   "Add %lu items to the queue? Originals are prepared one at a time. Keep the app open.": "%lu件をキューに追加しますか？原本を1件ずつ準備します。アプリを開いたままにしてください。",
-  "No accessible photos in this album. Check photo permissions.": "このアルバムにアクセス可能な写真がありません。写真のアクセス権を確認してください。"
+  "No accessible photos in this album. Check photo permissions.": "このアルバムにアクセス可能な写真がありません。写真のアクセス権を確認してください。",
+  "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "アップロードによる空き容量の確保を待っています。準備は自動的に再開します。アプリを開いたままにしてください。",
+  "Preparation is waiting. Turn off Pause uploads to continue.": "準備は待機中です。「アップロードを一時停止」をオフにして続行してください。",
+  "Not enough space to prepare this original while keeping free space available.": "空き容量を確保しながらこのオリジナルを準備するための容量が不足しています。"
 }

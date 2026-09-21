@@ -67,6 +67,12 @@ NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,
 NSString *GSImportPhotoIdentifier(NSString *identifier,NSString *account,NSString *quality,NSError **error){
  return GSImportPhotoIdentifierChecked(identifier,account,quality,nil,error);
 }
+NSString *GSImportPhotoIdentifierWithProgress(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
+ return GSImportPhotoIdentifierChecked(identifier,account,quality,authorization,error);
+}
+NSString *GSImportFilesWithProgress(NSArray *files,NSString *account,NSString *quality,NSDate *date,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
+ return GSImportFiles(files,account,quality,date,error);
+}
 static NSDictionary *Run(NSArray *ids){
  __block NSDictionary *done=nil;
  BOOL started=GSStartBatchImport(ids.count,@"picker",YES,GSPhotoIdentifierProvider(ids),@"a@example.com",@"identity-A",nil,^(NSDictionary *state){assert(NSThread.isMainThread);done=state;});assert(started);

@@ -451,7 +451,11 @@
 - (NSString *)batchStatus:(NSDictionary *)state{
  NSString *counts=[NSString stringWithFormat:GSL(@"Queued %lu / %lu · Failed %lu · Remaining %lu"),[state[@"queued"]unsignedLongValue],[state[@"total"]unsignedLongValue],[state[@"failed"]unsignedLongValue],[state[@"remaining"]unsignedLongValue]];
  NSString *reason=state[@"stopReason"],*help=nil;
- if([state[@"active"]boolValue])help=GSL(@"Preparing originals. Keep the app open.");
+ if([state[@"active"]boolValue]){
+  if([state[@"stage"]isEqual:@"waiting_storage"])help=GSL(@"Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.");
+  else if([state[@"stage"]isEqual:@"waiting_upload_resume"])help=GSL(@"Preparation is waiting. Turn off Pause uploads to continue.");
+  else help=GSL(@"Preparing originals. Keep the app open.");
+ }
  else if([reason isEqual:@"account_changed"])help=GSL(@"Preparation stopped because the account changed. Reconnect and select the remaining items.");
  else if([reason isEqual:@"queue_rejected"]||[reason isEqual:@"service_unavailable"]||[reason isEqual:@"local_storage"])help=GSL(@"Preparation stopped. Check the connection, free space and queue, then select the remaining items.");
  else if(reason)help=GSL(@"Preparation stopped. Items already queued are kept.");

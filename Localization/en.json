@@ -133,5 +133,8 @@
   "Open folder": "Open folder",
   "Upload all accessible photos and videos": "Upload all accessible photos and videos",
   "Add %lu items to the queue? Originals are prepared one at a time. Keep the app open.": "Add %lu items to the queue? Originals are prepared one at a time. Keep the app open.",
-  "No accessible photos in this album. Check photo permissions.": "No accessible photos in this album. Check photo permissions."
+  "No accessible photos in this album. Check photo permissions.": "No accessible photos in this album. Check photo permissions.",
+  "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.",
+  "Preparation is waiting. Turn off Pause uploads to continue.": "Preparation is waiting. Turn off Pause uploads to continue.",
+  "Not enough space to prepare this original while keeping free space available.": "Not enough space to prepare this original while keeping free space available."
 }

@@ -1,6 +1,7 @@
 #import "../UI/GSBatchImport.h"
 #import "../UI/GSExporter.h"
 #import "../Shared/IPCProtocol.h"
+#import "../UI/GSImportStorage.h"
 #include <assert.h>
 #include <stdatomic.h>
 
@@ -18,6 +19,10 @@ static NSString *FetchQueueLabel;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
+static NSUInteger CapacityWaits,PausedWaits,StorageEvents,FreeReads,CloudCancelled;
+static BOOL LowSpace,LowSpaceDuringExport;
+static atomic_int CloudCancel;
+unsigned long long GSFixtureFreeBytes(void){FreeReads++;return LowSpace||(LowSpaceDuringExport&&FreeReads>1)?GSStorageReserve:32ULL<<30;}
 #if GS_JAILED
 static const NSUInteger FixtureSize=2097165;
 #else
@@ -63,6 +68,22 @@ static NSData *OriginalBytes(BOOL movie){
 @implementation PHAssetResourceRequestOptions @end
 @implementation PHAssetResourceManager
 + (instancetype)defaultManager{static id manager;static dispatch_once_t once;dispatch_once(&once,^{manager=[self new];});return manager;}
+- (void)cancelDataRequest:(PHAssetResourceDataRequestID)requestID{assert(requestID==1);CloudCancelled++;atomic_store(&CloudCancel,1);}
+- (PHAssetResourceDataRequestID)requestDataForAssetResource:(PHAssetResource *)resource options:(PHAssetResourceRequestOptions *)options dataReceivedHandler:(void (^)(NSData *))handler completionHandler:(void (^)(NSError *))completion{
+ assert(!NSThread.isMainThread&&options.networkAccessAllowed);
+ int active=atomic_fetch_add(&ActiveExports,1)+1;if(active>atomic_load(&PeakExports))atomic_store(&PeakExports,active);assert(active==1);
+ atomic_store(&CloudCancel,0);BOOL unreadable=resource.unreadable;
+ NSData *bytes=OriginalBytes(resource.type==PHAssetResourceTypePairedVideo);Written++;
+ dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  NSError *failure=unreadable?[NSError errorWithDomain:@"private-resource-error" code:99 userInfo:nil]:nil;
+  if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=1048576){
+   handler([bytes subdataWithRange:NSMakeRange(offset,MIN(1048576,bytes.length-offset))]);
+  }
+  if(atomic_load(&CloudCancel))failure=[NSError errorWithDomain:@"PhotoKitCancelled" code:1 userInfo:nil];
+  atomic_fetch_sub(&ActiveExports,1);completion(failure);
+ }});
+ return 1;
+}
 - (void)writeDataForAssetResource:(PHAssetResource *)resource toFile:(NSURL *)url options:(PHAssetResourceRequestOptions *)options completionHandler:(void (^)(NSError *))completion{
  assert(!NSThread.isMainThread&&options.networkAccessAllowed);
  int active=atomic_fetch_add(&ActiveExports,1)+1;
@@ -90,6 +111,10 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  // Match the real transport boundary instead of accepting oversized mocks.
  assert([NSJSONSerialization dataWithJSONObject:request options:0 error:nil].length<=GS_MAX_JSON);
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
+ if([op isEqual:@"import_capacity"]){
+  BOOL full=CapacityWaits>0,paused=PausedWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;
+  return @{@"retainedBytes":@(full?GSStorageQueueLimit:0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?GSStorageQueueLimit:0),@"paused":paused?@YES:@NO};
+ }
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
  if([op isEqual:@"options"])return @{@"quality":@"original"};
  if([op isEqual:@"source_lookup"]){
@@ -185,6 +210,31 @@ int main(void){@autoreleasepool{
   SlashHeavy=NO;
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSStorageQueueFull(GSStorageQueueLimit,1,0));
+  assert(GSStorageQueueFull(GSStorageQueueLimit-1,1,2));
+  assert(GSStorageQueueFull(1,128,0));
+  assert(!GSStorageQueueFull(0,0,8ULL<<30)); // oversized asset runs alone
+  CapacityWaits=2;StorageEvents=0;
+  assert(GSImportPhotoIdentifierWithProgress(@"capacity-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){if([s[@"stage"]isEqual:@"waiting_storage"])StorageEvents++;},nil));
+  assert(CapacityWaits==0&&StorageEvents==2);
+  PausedWaits=2;StorageEvents=0;
+  assert(GSImportPhotoIdentifierWithProgress(@"pause-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){if([s[@"stage"]isEqual:@"waiting_upload_resume"])StorageEvents++;},nil));
+  assert(PausedWaits==0&&StorageEvents==2);
+  CapacityWaits=20;NSError *error=nil;
+  assert(!GSImportPhotoIdentifierWithProgress(@"cancel-capacity",@"fixture@example.com",@"original",^BOOL{return CapacityWaits>18;},nil,&error));
+  assert([error.domain isEqual:@"Gunshot.Authorization"]);CapacityWaits=0;
+  LowSpace=YES;NSUInteger before=Written;
+  assert(!GSImportPhotoIdentifier(@"no-disk",@"fixture@example.com",@"original",&error));
+  assert(error.code==NSFileWriteOutOfSpaceError&&Written==before);LowSpace=NO;
+  FreeReads=0;LowSpaceDuringExport=YES;before=Queued;
+  assert(!GSImportPhotoIdentifier(@"disk-filled-mid-export",@"fixture@example.com",@"original",&error));
+  assert(error.code==NSFileWriteOutOfSpaceError&&CloudCancelled>0&&Queued==before);
+  LowSpaceDuringExport=NO;
+  assert(GSImportPhotoIdentifier(@"after-space-recovered",@"fixture@example.com",@"original",&error));assert(!error);
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
+ NSLog(@"PASS storage backpressure, automatic resume, paused uploads, cancellation, oversized isolation and low-space stream cancellation/recovery");
  NSLog(@"PASS slash-heavy originals fit the actual JSON transport limit with exact bytes");
  NSLog(@"PASS late chunk error lifetime, cancellation, recovery and 25000 source-deduplicated imports");
  NSLog(@"PASS 60 HEIC/HEIF originals, Live Photo resources, exact IPC bytes/timestamp, unreadable original isolation and bounded concurrent native exports");
