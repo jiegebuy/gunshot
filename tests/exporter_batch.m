@@ -1,5 +1,6 @@
 #import "../UI/GSBatchImport.h"
 #import "../UI/GSExporter.h"
+#import "../Shared/IPCProtocol.h"
 #include <assert.h>
 #include <stdatomic.h>
 
@@ -9,6 +10,7 @@
 static NSUInteger Queued,Written;
 static BOOL IncludeUnreadable;
 static BOOL RejectAppend;
+static BOOL SlashHeavy;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
@@ -19,6 +21,7 @@ static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
 static NSData *OriginalBytes(BOOL movie){
  NSMutableData *bytes=[NSMutableData dataWithLength:70013];uint8_t *p=bytes.mutableBytes;
  for(NSUInteger i=0;i<bytes.length;i++)p[i]=(uint8_t)(i*17+(movie?3:7));
+ if(SlashHeavy)memset(p,0xff,bytes.length);
  memcpy(p,"\0\0\0\x18" "ftyp",8);memcpy(p+8,movie?"qt  ":"heic",4);return bytes;
 }
 @interface PHFetchResult ()
@@ -69,6 +72,8 @@ static NSData *OriginalBytes(BOOL movie){
 @end
 BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread);return [identifier isEqual:@"fixture"];} 
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
+ // Match the real transport boundary instead of accepting oversized mocks.
+ assert([NSJSONSerialization dataWithJSONObject:request options:0 error:nil].length<=GS_MAX_JSON);
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
  if([op isEqual:@"options"])return @{@"quality":@"original"};
@@ -152,6 +157,20 @@ int main(void){@autoreleasepool{
   assert(Written==before);
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,60*NSEC_PER_SEC))==0);
+ // JPEG padding and other binary data can encode as long runs of '/'.
+ // The old 32 KiB chunk exceeds 60 KB after Foundation JSON escaping.
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  SlashHeavy=YES;
+  NSMutableData *worst=[NSMutableData dataWithLength:32768];memset(worst.mutableBytes,0xff,worst.length);
+  NSData *oversized=[NSJSONSerialization dataWithJSONObject:@{@"data":[worst base64EncodedStringWithOptions:0]} options:0 error:nil];
+  assert(oversized.length>GS_MAX_JSON);
+  NSError *error=nil;
+  assert(GSImportPhotoIdentifier(@"slash-heavy-photo",@"fixture@example.com",@"original",&error));
+  assert(!error);
+  SlashHeavy=NO;
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
+ NSLog(@"PASS slash-heavy originals fit the actual JSON transport limit with exact bytes");
  NSLog(@"PASS late chunk error lifetime, cancellation, recovery and 25000 source-deduplicated imports");
  NSLog(@"PASS 60 HEIC/HEIF originals, Live Photo resources, exact IPC bytes/timestamp, unreadable original isolation and bounded concurrent native exports");
 }}

@@ -27,13 +27,18 @@ NSDictionary *GSEmbeddedRuntimeSnapshot(void) {
 }
 static NSDictionary *GSCall(NSDictionary *request,const char *role) {
  NSData *data=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
- if(!data||data.length>GS_MAX_JSON)return nil;
+ if(!data||data.length>GS_MAX_JSON){GSRecord(@{@"lastRequestFailure":@{@"op":request[@"op"]?:@"unknown",@"code":data?@"request_too_large":@"serialization_failed",@"jsonBytes":@(data.length)}});return nil;}
  NSString *json=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];
  char *raw=GunshotRequest((char *)json.UTF8String,(char *)role);
- if(!raw)return nil;
+ if(!raw){GSRecord(@{@"lastRequestFailure":@{@"op":request[@"op"]?:@"unknown",@"code":@"empty_reply"}});return nil;}
  NSData *reply=[NSData dataWithBytes:raw length:strlen(raw)];GunshotFree(raw);
  id parsed=[NSJSONSerialization JSONObjectWithData:reply options:0 error:nil];
- if(![parsed isKindOfClass:NSDictionary.class]||![parsed[@"ok"]boolValue])return nil;
+ if(![parsed isKindOfClass:NSDictionary.class]||![parsed[@"ok"]boolValue]){
+  // Only record protocol error codes, never request bodies or photo contents.
+  NSString *code=[parsed isKindOfClass:NSDictionary.class]?parsed[@"error"]:nil;
+  if(![@[@"invalid_request",@"unauthorized",@"internal_error",@"not_initialized"]containsObject:code?:@""])code=@"request_failed";
+  GSRecord(@{@"lastRequestFailure":@{@"op":request[@"op"]?:@"unknown",@"code":code}});return nil;
+ }
  return parsed[@"data"]==NSNull.null?@{}:parsed[@"data"];
 }
 static void GSConditions(void) {
