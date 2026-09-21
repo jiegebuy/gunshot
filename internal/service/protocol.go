@@ -12,6 +12,9 @@ func roleAllowed(role, op string) bool {
 		return op == "conditions"
 	}
 	common := op == "upload_summary" || op == "job" || op == "ping" || op == "list" || op == "accounts" || op == "options" || op == "retry" || op == "cancel" || op == "clear_completed" || op == "retry_failed"
+	if (role == "photos" || role == "googlephotos") && op == "source_lookup" {
+		return true
+	}
 	if role == "settings" || role == "googlephotos" {
 		return common || (role == "googlephotos" && (op == "begin" || op == "append" || op == "seal" || op == "account_native" || op == "native_bearer" || op == "native_bearer_clear")) || op == "configure" || op == "account_add" || op == "account_remove" || op == "account_select"
 	}
@@ -95,6 +98,25 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		return map[string]any{"jobs": e.state.Jobs[start:end], "next": next, "online": e.online, "wifi": e.wifi, "charging": e.charging}, nil
 	case "accounts", "account_native", "native_bearer", "native_bearer_clear", "account_add", "account_remove", "account_select":
 		return e.accounts(r)
+	case "source_lookup":
+		if !accountExists(r.Account) || !validQuality(r.Quality) {
+			return nil, errRequest
+		}
+		j, err := e.findSource(r.Account, r.Quality, r.SourceID)
+		if err != nil {
+			return nil, err
+		}
+		if j != nil {
+			return map[string]any{"found": true, "id": j.ID, "state": j.State, "retryable": retryableFailure(j)}, nil
+		}
+		receipt, err := e.findSourceReceipt(r.Account, r.Quality, r.SourceID)
+		if err != nil {
+			return nil, err
+		}
+		if receipt != nil {
+			return map[string]any{"found": true, "id": receipt.ID, "state": "completed", "retryable": false, "receipt": true}, nil
+		}
+		return map[string]any{"found": false}, nil
 	case "begin":
 		if !accountExists(r.Account) {
 			return nil, errRequest
@@ -104,6 +126,15 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		next := e.state.Jobs[:0]
 		for _, j := range e.state.Jobs {
 			if j.State == "completed" || j.State == "cancelled" {
+				// A completed source-backed job is removable only after its durable
+				// receipt exists. If receipt persistence failed, keep the row as the
+				// authoritative dedup record instead of risking a future re-upload.
+				if j.State == "completed" && j.SourceKey != "" {
+					if _, ok := e.sourceReceipts[j.SourceKey]; !ok {
+						next = append(next, j)
+						continue
+					}
+				}
 				delete(e.jobsByID, j.ID)
 			} else {
 				next = append(next, j)
@@ -118,7 +149,9 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 	case "retry_failed":
 		changed := false
 		for _, j := range e.state.Jobs {
-			if j.State == "failed" {
+			// A lost commit response may already have created the remote item.
+			// Bulk retrying that state is a duplicate-upload hazard.
+			if retryableFailure(j) {
 				j.resetRetry()
 				changed = true
 			}
@@ -133,6 +166,11 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 	}
 	j := e.find(r.ID)
 	if j == nil {
+		if r.Op == "job" {
+			if receipt, ok := e.receiptsByID[r.ID]; ok {
+				return map[string]any{"id": receipt.ID, "state": "completed", "mediaKey": receipt.MediaKey, "uploaded": 0, "total": 0}, nil
+			}
+		}
 		return nil, errRequest
 	}
 	if (r.Op == "append" || r.Op == "seal") && j.Owner != role {
@@ -162,7 +200,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		}
 		return nil, err
 	case "retry":
-		if j.State != "failed" {
+		if !retryableFailure(j) {
 			return nil, errRequest
 		}
 		j.resetRetry()

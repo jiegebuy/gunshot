@@ -56,12 +56,24 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
    state[@"stage"]=@"exporting";GSRecordBatch(state);
    id item=provider(index);NSError *error=nil;
    if(!item){processed++;failed++;failures[@"inaccessible"]=@([failures[@"inaccessible"]unsignedIntegerValue]+1);}
-   else {
+   else if(assets){
+    // Providers deliberately carry only immutable localIdentifier strings.
+    // PHAsset/PHFetchResult objects never survive across our dispatch queues.
+    NSString *job=[item isKindOfClass:NSString.class]?GSImportPhotoIdentifierChecked(item,batch.account,quality,^BOOL{
+     return GSCheckBatchAccount(batch)==nil;
+    },&error):nil;
+    if(!reason)reason=GSCheckBatchAccount(batch);
+    if(!reason&&job){processed++;queued++;}
+    else if(!reason){
+     if([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError)reason=@"local_storage";
+     else if([error.domain isEqual:@"Gunshot.IPC"])reason=@"queue_rejected";
+     else {processed++;failed++;failures[@"export_failed"]=@([failures[@"export_failed"]unsignedIntegerValue]+1);}
+    }
+   }else{
     NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
     BOOL created=[NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error];
     NSArray *files=nil;NSDate *date=nil;BOOL scoped=NO;
     if(!created)reason=@"local_storage";
-    else if(assets){PHAsset *asset=item;date=asset.creationDate;files=GSExportAsset(asset,directory,&error);}
     else {NSURL *url=item;scoped=[url startAccessingSecurityScopedResource];NSDictionary *attr=[NSFileManager.defaultManager attributesOfItemAtPath:url.path error:&error];if(attr){files=@[url];date=attr[NSFileModificationDate];}}
     if(!reason)reason=GSCheckBatchAccount(batch); // Cloud export may outlive sign-in or cancellation.
     if(!reason&&!files){
@@ -91,21 +103,8 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
 }
 GSBatchItemProvider GSPhotoIdentifierProvider(NSArray *identifiers){
  NSArray *selection=[identifiers copy];
- __block NSUInteger pageStart=NSNotFound;
- __block NSDictionary *page;
  return ^id(NSUInteger index){
-  NSCAssert(!NSThread.isMainThread,@"Resolve selected photos off main");
   if(index>=selection.count)return nil;
-  NSUInteger start=index/64*64;
-  if(start!=pageStart){
-   NSMutableArray *ids=[NSMutableArray array];
-   for(id value in [selection subarrayWithRange:NSMakeRange(start,MIN((NSUInteger)64,selection.count-start))])
-    if([value isKindOfClass:NSString.class]&&[value length])[ids addObject:value];
-   NSMutableDictionary *resolved=[NSMutableDictionary dictionary];
-   PHFetchResult *found=[PHAsset fetchAssetsWithLocalIdentifiers:ids options:nil];
-   [found enumerateObjectsUsingBlock:^(PHAsset *asset,NSUInteger i,BOOL *stop){resolved[asset.localIdentifier]=asset;}];
-   page=[resolved copy];pageStart=start;
-  }
-  id key=selection[index];return [key isKindOfClass:NSString.class]?page[key]:nil;
+  id value=selection[index];return [value isKindOfClass:NSString.class]&&[value length]?[value copy]:nil;
  };
 }

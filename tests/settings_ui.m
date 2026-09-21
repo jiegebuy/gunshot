@@ -84,6 +84,8 @@ void GSSetUploadDiagnostics(BOOL enabled){}
 NSDictionary *GSUploadDiagnosticsSnapshot(void){return @{};}
 NSArray<NSURL *> *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error){return nil;}
 NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){return nil;}
+NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){return nil;}
+NSString *GSImportPhotoIdentifier(NSString *identifier,NSString *account,NSString *quality,NSError **error){return nil;}
 static NSString *Documents(void){return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;}
 static void Finish(BOOL success,NSString *reason){
  [[NSString stringWithFormat:@"%@ %@\n",success?@"PASS":@"FAIL",reason]writeToFile:[Documents() stringByAppendingPathComponent:@"result.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];

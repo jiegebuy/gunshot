@@ -3,3 +3,9 @@
 // These methods run on a worker queue. UI callbacks remain on the main queue.
 NSArray<NSURL *> *GSExportAsset(PHAsset *asset, NSURL *directory, NSError **error);
 NSString *GSImportFiles(NSArray<NSURL *> *files, NSString *account, NSString *quality, NSDate *date, NSError **error);
+// Resolve PhotoKit by local identifier on the preparation worker and check the
+// persistent queue identity before any original bytes are exported.
+NSString *GSImportPhotoIdentifier(NSString *localIdentifier, NSString *account, NSString *quality, NSError **error);
+typedef BOOL (^GSImportAuthorizationCheck)(void);
+NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier, NSString *account, NSString *quality,
+ GSImportAuthorizationCheck authorization, NSError **error);

@@ -1,7 +1,8 @@
 #pragma once
 #import <Foundation/Foundation.h>
 
-// Providers run on the import worker, one item at a time. nil means inaccessible.
+// Providers run on the import worker, one item at a time. For PhotoKit batches
+// they return an NSString localIdentifier, never a PHAsset/PHFetchResult.
 typedef id (^GSBatchItemProvider)(NSUInteger index);
 typedef void (^GSBatchProgress)(NSDictionary *snapshot);
 FOUNDATION_EXPORT BOOL GSStartBatchImport(NSUInteger count, NSString *source, BOOL assets,
@@ -9,5 +10,5 @@ FOUNDATION_EXPORT BOOL GSStartBatchImport(NSUInteger count, NSString *source, BO
  GSBatchProgress progress, GSBatchProgress completion);
 FOUNDATION_EXPORT void GSStopBatchImport(BOOL backgroundExpired);
 FOUNDATION_EXPORT NSDictionary *GSBatchImportSnapshot(void);
-// Resolve a bounded page of identifiers off main; never load itemProvider media.
+// Copy stable PhotoKit identifiers without retaining framework objects across queues.
 FOUNDATION_EXPORT GSBatchItemProvider GSPhotoIdentifierProvider(NSArray *identifiers);

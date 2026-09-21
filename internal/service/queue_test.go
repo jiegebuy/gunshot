@@ -63,6 +63,87 @@ func TestImportBoundsAndDuplicate(t *testing.T) {
 		t.Fatal("state not private")
 	}
 }
+func TestSourceIdentityDeduplicatesBeforeStaging(t *testing.T) {
+	e := newEngine(t, nil)
+	r := Request{Account: "a@example.com", Quality: "original", SourceID: "asset-local-id-secret", Resources: []Resource{{Name: "photo.jpg", Size: 3}}}
+	first, err := e.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := first.(map[string]any)
+	b := second.(map[string]any)
+	if a["id"] != b["id"] || b["duplicate"] != true || len(e.state.Jobs) != 1 {
+		t.Fatalf("source duplicate was staged twice: first=%v second=%v jobs=%d", a, b, len(e.state.Jobs))
+	}
+	if e.state.Jobs[0].SourceKey == "" || e.state.Jobs[0].SourceKey == r.SourceID {
+		t.Fatal("source identity was not hashed")
+	}
+	if err := e.save(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(filepath.Join(e.root, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(state), r.SourceID) {
+		t.Fatal("raw PhotoKit identifier persisted")
+	}
+	if _, err := e.begin(Request{Account: r.Account, Quality: "quota", SourceID: r.SourceID, Resources: r.Resources}, "googlephotos"); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.state.Jobs) != 2 {
+		t.Fatal("quality profile incorrectly shared source identity")
+	}
+}
+func TestSourceReceiptSurvivesHistoryCleanupAndRestart(t *testing.T) {
+	e := newEngine(t, nil)
+	r := Request{Account: "a@example.com", Quality: "original", SourceID: "stable-photo-id", Resources: []Resource{{Name: "photo.jpg", Size: 3}}}
+	value, err := e.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := e.find(value.(map[string]any)["id"].(string))
+	j.State, j.MediaKey, j.OriginalPolicy = "completed", "remote-media-key", 1
+	if err := e.recordSourceReceipt(j); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.handle(Request{Op: "clear_completed"}, "photos"); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.state.Jobs) != 0 {
+		t.Fatal("completed history was not cleared")
+	}
+	duplicate, err := e.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.(map[string]any)["id"] != j.ID || duplicate.(map[string]any)["duplicate"] != true || len(e.state.Jobs) != 0 {
+		t.Fatal("receipt did not deduplicate after history cleanup")
+	}
+	reopened, err := Open(e.root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err = reopened.begin(r, "googlephotos")
+	if err != nil || duplicate.(map[string]any)["id"] != j.ID || len(reopened.state.Jobs) != 0 {
+		t.Fatalf("receipt did not survive restart: %v %v", duplicate, err)
+	}
+	state, err := reopened.handle(Request{Op: "job", ID: j.ID}, "photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := state.(map[string]any)
+	if completed["state"] != "completed" || completed["mediaKey"] != "remote-media-key" {
+		t.Fatalf("receipt did not synthesize completed job state: %v", completed)
+	}
+}
 func TestPartialImportNeverQueues(t *testing.T) {
 	e := newEngine(t, nil)
 	v, err := e.begin(Request{Account: "a", Quality: "original", Resources: []Resource{{"a.jpg", 3}}}, "photos")
@@ -101,6 +182,15 @@ func TestRestartCommitIsUncertain(t *testing.T) {
 	got := next.find(j.ID)
 	if got.State != "failed" || got.Error != "commit_outcome_unknown" {
 		t.Fatalf("unsafe recovery: %+v", got)
+	}
+	if _, err := next.handle(Request{Op: "retry", ID: got.ID}, "photos"); err == nil {
+		t.Fatal("uncertain commit accepted explicit retry")
+	}
+	if _, err := next.handle(Request{Op: "retry_failed"}, "photos"); err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "failed" || got.Error != "commit_outcome_unknown" {
+		t.Fatal("bulk retry changed uncertain commit")
 	}
 }
 func TestRestrictionsRetryAndSanitizedError(t *testing.T) {
@@ -224,6 +314,15 @@ func TestRemoteLivePhotoComponentIsNotRetried(t *testing.T) {
 	if j.State != "failed" || j.Error != "remote_live_photo_component_exists" || j.Attempts != 1 {
 		t.Fatal("duplicate component outcome lost")
 	}
+	if _, err := e.handle(Request{Op: "retry", ID: j.ID}, "photos"); err == nil {
+		t.Fatal("remote component duplicate accepted explicit retry")
+	}
+	if _, err := e.handle(Request{Op: "retry_failed"}, "photos"); err != nil {
+		t.Fatal(err)
+	}
+	if j.State != "failed" {
+		t.Fatal("bulk retry re-queued remote component duplicate")
+	}
 }
 
 func TestStructurallyCorruptStateRejected(t *testing.T) {
@@ -291,12 +390,12 @@ func TestEmbeddedBackgroundPauseAndReopen(t *testing.T) {
 }
 
 func TestGooglePhotosSettingsRole(t *testing.T) {
-	for _, op := range []string{"configure", "account_add", "account_native", "account_remove", "account_select", "begin", "append", "seal"} {
+	for _, op := range []string{"configure", "account_add", "account_native", "account_remove", "account_select", "source_lookup", "begin", "append", "seal"} {
 		if !roleAllowed("googlephotos", op) {
 			t.Fatalf("in-app settings/import denied: %s", op)
 		}
 	}
-	if roleAllowed("googlephotos", "conditions") || roleAllowed("photos", "account_add") {
+	if roleAllowed("googlephotos", "conditions") || roleAllowed("photos", "account_add") || !roleAllowed("photos", "source_lookup") || roleAllowed("settings", "source_lookup") {
 		t.Fatal("expanded role crossed native boundary")
 	}
 }

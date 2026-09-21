@@ -12,6 +12,7 @@
 #import "host_profile.h"
 #import "../UI/GSBackupRequests.h"
 #import "../UI/GSNativeRouting.h"
+#import "../UI/GSExporter.h"
 #import "native_account_fixture.h"
 #import "../Shared/IPCProtocol.h"
 #import <objc/runtime.h>
@@ -45,6 +46,14 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
 }
 NSArray *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error){assert(!NSThread.isMainThread);if(atomic_load(&switchDuringExport))dispatch_sync(dispatch_get_main_queue(),^{GSFixtureSelectAccount(otherAccount);});return @[[directory URLByAppendingPathComponent:@"original.heic"]];}
 NSString *GSImportFiles(NSArray *files,NSString *account,NSString *quality,NSDate *date,NSError **error){assert([quality isEqual:@"original"]);@synchronized(PHAsset.class){queued++;}return @"job";}
+NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){
+ assert(!NSThread.isMainThread&&identifier.length&&[quality isEqual:@"original"]);
+ if(authorization&&!authorization())return nil;
+ if(atomic_load(&switchDuringExport))dispatch_sync(dispatch_get_main_queue(),^{GSFixtureSelectAccount(otherAccount);});
+ if(authorization&&!authorization())return nil;
+ @synchronized(PHAsset.class){queued++;}return @"job";
+}
+NSString *GSImportPhotoIdentifier(NSString *identifier,NSString *account,NSString *quality,NSError **error){return GSImportPhotoIdentifierChecked(identifier,account,quality,nil,error);}
 @interface Credentials : NSObject
 @property(nonatomic,strong) id accountID;
 @end

@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"time"
 )
+
+const sourceReceiptsFile = "source-receipts.jsonl"
 
 func validID(s string) bool {
 	if len(s) != 32 {
@@ -25,7 +29,130 @@ func validID(s string) bool {
 func safeName(s string) bool {
 	return len(s) > 0 && len(s) < 240 && s != "." && s != ".." && filepath.Base(s) == s && !strings.ContainsAny(s, "/\\\x00\n\r")
 }
+func validSHA256(s string) bool {
+	if len(s) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+func sourceKey(account, quality, sourceID string) (string, error) {
+	if sourceID == "" {
+		return "", nil
+	}
+	if len(sourceID) > 2048 || strings.ContainsRune(sourceID, '\x00') || account == "" || !validQuality(quality) {
+		return "", errRequest
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s", account, quality, sourceID)
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+func reusableSourceJob(j *Job, quality string) bool {
+	if j == nil || j.State == "cancelled" {
+		return false
+	}
+	// Older builds could mark an original job completed from a saver hash match.
+	// Do not use that legacy completion as proof that original bytes were sent.
+	return !(quality == "original" && j.State == "completed" && j.OriginalPolicy == 0)
+}
+func (e *Engine) findSource(account, quality, sourceID string) (*Job, error) {
+	key, err := sourceKey(account, quality, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return nil, nil
+	}
+	for _, j := range e.state.Jobs {
+		if j.SourceKey == key && reusableSourceJob(j, quality) {
+			return j, nil
+		}
+	}
+	return nil, nil
+}
+func loadSourceReceipts(root string) (map[string]SourceReceipt, map[string]SourceReceipt, error) {
+	bySource := map[string]SourceReceipt{}
+	byID := map[string]SourceReceipt{}
+	file, err := os.Open(filepath.Join(root, sourceReceiptsFile))
+	if os.IsNotExist(err) {
+		return bySource, byID, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	for scanner.Scan() {
+		var receipt SourceReceipt
+		if json.Unmarshal(scanner.Bytes(), &receipt) != nil || !validSHA256(receipt.SourceKey) || !validID(receipt.ID) || receipt.MediaKey == "" || len(receipt.MediaKey) > 8192 || receipt.Completed <= 0 || receipt.OriginalPolicy < 0 || receipt.OriginalPolicy > 1 {
+			return nil, nil, errors.New("invalid source receipt log; restore backup")
+		}
+		bySource[receipt.SourceKey] = receipt
+		byID[receipt.ID] = receipt
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	return bySource, byID, nil
+}
+func (e *Engine) findSourceReceipt(account, quality, sourceID string) (*SourceReceipt, error) {
+	key, err := sourceKey(account, quality, sourceID)
+	if err != nil || key == "" {
+		return nil, err
+	}
+	receipt, ok := e.sourceReceipts[key]
+	if !ok || (quality == "original" && receipt.OriginalPolicy == 0) {
+		return nil, nil
+	}
+	return &receipt, nil
+}
+func (e *Engine) recordSourceReceipt(j *Job) error {
+	if j == nil || j.SourceKey == "" || j.MediaKey == "" || (j.Quality == "original" && j.OriginalPolicy == 0) {
+		return nil
+	}
+	if _, exists := e.sourceReceipts[j.SourceKey]; exists {
+		return nil
+	}
+	receipt := SourceReceipt{SourceKey: j.SourceKey, ID: j.ID, MediaKey: j.MediaKey, OriginalPolicy: j.OriginalPolicy, Completed: time.Now().Unix()}
+	line, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	line = append(line, '\n')
+	path := filepath.Join(e.root, sourceReceiptsFile)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if err = os.Chmod(path, 0600); err == nil {
+		_, err = file.Write(line)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	e.sourceReceipts[j.SourceKey] = receipt
+	e.receiptsByID[j.ID] = receipt
+	return nil
+}
 func (e *Engine) begin(r Request, owner string) (any, error) {
+	if old, err := e.findSource(r.Account, r.Quality, r.SourceID); err != nil {
+		return nil, err
+	} else if old != nil {
+		return map[string]any{"id": old.ID, "duplicate": true}, nil
+	}
+	if receipt, err := e.findSourceReceipt(r.Account, r.Quality, r.SourceID); err != nil {
+		return nil, err
+	} else if receipt != nil {
+		return map[string]any{"id": receipt.ID, "duplicate": true}, nil
+	}
 	if len(e.state.Jobs) >= MaxJobs || len(r.Resources) < 1 || len(r.Resources) > 2 {
 		return nil, errRequest
 	}
@@ -49,7 +176,12 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if err := os.Mkdir(e.jobDir(id), 0700); err != nil {
 		return nil, err
 	}
-	j := &Job{ID: id, Account: r.Account, Quality: r.Quality, Resources: r.Resources, State: "importing", Created: time.Now().Unix(), Timestamp: r.Timestamp, Total: total, Owner: owner}
+	source, err := sourceKey(r.Account, r.Quality, r.SourceID)
+	if err != nil {
+		_ = os.RemoveAll(e.jobDir(id))
+		return nil, err
+	}
+	j := &Job{ID: id, Account: r.Account, Quality: r.Quality, Resources: r.Resources, State: "importing", Created: time.Now().Unix(), Timestamp: r.Timestamp, Total: total, Owner: owner, SourceKey: source}
 	for _, f := range r.Resources {
 		file, err := os.OpenFile(filepath.Join(e.jobDir(id), f.Name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
@@ -154,6 +286,11 @@ func (j *Job) resetRetry() {
 	j.Next = 0
 	j.CancelRequested = false
 }
+func retryableFailure(j *Job) bool {
+	// Only a failure known to have happened before a successful/uncertain commit
+	// is safe to re-run. Component-exists and commit-unknown are duplicate hazards.
+	return j != nil && j.State == "failed" && j.Error == "upload_failed_check_account_and_network"
+}
 
 func (e *Engine) Tick() {
 	e.mu.Lock()
@@ -229,6 +366,9 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 		j.MediaKey = key
 		j.Uploaded = j.Total
 		j.Error = ""
+		// Persist source identity separately from queue history so clearing
+		// completed rows cannot make Google Photos scan/upload the asset again.
+		_ = e.recordSourceReceipt(j)
 	case errors.Is(err, errRemoteComponentExists):
 		j.State = "failed"
 		j.Error = "remote_live_photo_component_exists"

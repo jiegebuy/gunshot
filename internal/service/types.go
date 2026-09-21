@@ -46,6 +46,7 @@ type Job struct {
 	Created         int64      `json:"created"`
 	Timestamp       int64      `json:"timestamp"`
 	Fingerprint     string     `json:"fingerprint,omitempty"`
+	SourceKey       string     `json:"sourceKey,omitempty"` // Hashed account/quality/source identity; raw PhotoKit ID is never persisted.
 	Attempts        int        `json:"attempts"`
 	Next            int64      `json:"next,omitempty"`
 	Uploaded        int64      `json:"uploaded"`
@@ -61,8 +62,16 @@ type State struct {
 	Options            Options `json:"options"`
 	Jobs               []*Job  `json:"jobs"`
 }
+type SourceReceipt struct {
+	SourceKey      string `json:"sourceKey"`
+	ID             string `json:"id"`
+	MediaKey       string `json:"mediaKey"`
+	OriginalPolicy int    `json:"originalPolicy,omitempty"`
+	Completed      int64  `json:"completed"`
+}
 type Request struct {
 	NativeID  string     `json:"nativeID,omitempty"`
+	SourceID  string     `json:"sourceID,omitempty"`
 	Op        string     `json:"op"`
 	ID        string     `json:"id,omitempty"`
 	Account   string     `json:"account,omitempty"`
@@ -91,6 +100,8 @@ type Engine struct {
 	root                   string
 	state                  State
 	jobsByID               map[string]*Job // Derived index; guarded by mu, never persisted.
+	sourceReceipts         map[string]SourceReceipt
+	receiptsByID           map[string]SourceReceipt
 	active                 map[string]context.CancelFunc
 	runner                 Runner
 	online, wifi, charging bool
@@ -153,7 +164,11 @@ func Open(root string, runner Runner) (*Engine, error) {
 	if err := validateState(s); err != nil {
 		return nil, err
 	}
-	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner}
+	receipts, receiptsByID, err := loadSourceReceipts(root)
+	if err != nil {
+		return nil, err
+	}
+	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner}
 	for _, j := range s.Jobs {
 		en.jobsByID[j.ID] = j
 		switch j.State {
@@ -217,7 +232,7 @@ func validateState(s State) error {
 	seen := map[string]bool{}
 	states := map[string]bool{"importing": true, "pending": true, "preparing": true, "uploading": true, "committing": true, "completed": true, "failed": true, "cancelled": true}
 	for _, j := range s.Jobs {
-		if j == nil || !validID(j.ID) || seen[j.ID] || !states[j.State] || !validQuality(j.Quality) || j.Account == "" || len(j.Resources) < 1 || len(j.Resources) > 2 || j.Attempts < 0 {
+		if j == nil || !validID(j.ID) || seen[j.ID] || !states[j.State] || !validQuality(j.Quality) || j.Account == "" || len(j.Resources) < 1 || len(j.Resources) > 2 || j.Attempts < 0 || (j.SourceKey != "" && !validSHA256(j.SourceKey)) {
 			return errors.New("invalid persisted job")
 		}
 		if j.Owner != "photos" && j.Owner != "googlephotos" {

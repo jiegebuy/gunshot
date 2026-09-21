@@ -37,7 +37,7 @@ static BOOL GSImportAuthorized(NSString *account,NSString *identity){
  return authorized&&[GSRequest(@{@"op":@"accounts"},nil)[@"selected"]isEqual:account];
 }
 static void GSRoute(id localAssets){
- NSMutableArray *assets=[NSMutableArray array];BOOL valid=[localAssets isKindOfClass:NSArray.class]||[localAssets isKindOfClass:NSSet.class];
+ NSMutableArray<NSString *> *identifiers=[NSMutableArray array];BOOL valid=[localAssets isKindOfClass:NSArray.class]||[localAssets isKindOfClass:NSSet.class];
  if(valid)for(id local in localAssets){
   PHAsset *asset=nil;
   if([local isKindOfClass:PHAsset.class])asset=local;
@@ -45,13 +45,13 @@ static void GSRoute(id localAssets){
    if(((BOOL(*)(id,SEL))objc_msgSend)(local,NSSelectorFromString(@"isLocked"))){valid=NO;break;}
    asset=((id(*)(id,SEL))objc_msgSend)(local,NSSelectorFromString(@"phAsset"));
   }
-  if(![asset isKindOfClass:PHAsset.class]){valid=NO;break;}
-  [assets addObject:asset];
+  if(![asset isKindOfClass:PHAsset.class]||!asset.localIdentifier.length){valid=NO;break;}
+  [identifiers addObject:asset.localIdentifier];
  }
  // Import silently; report failures in settings without native fallback.
  GSInitializeImport();@synchronized(GSImportLock){GSImportStatus[@"actions"]=@([GSImportStatus[@"actions"]unsignedIntegerValue]+1);}
- if(!valid||!assets.count){GSImportResult(@"The selected photos could not be retrieved.",0);return;}
- NSString *account=[GSNativeRoutingAccount()copy];NSArray *selection=[assets copy];
+ if(!valid||!identifiers.count){GSImportResult(@"The selected photos could not be retrieved.",0);return;}
+ NSString *account=[GSNativeRoutingAccount()copy];NSArray<NSString *> *selection=[identifiers copy];
  dispatch_async(dispatch_get_main_queue(),^{
   NSDictionary *native=GSNativeAccountSummary();NSString *identity=native[@"identifier"];
   if(![account isEqual:native[@"email"]]||!GSNativeIdentityMatches(identity)){GSImportResult(@"The signed-in account does not match the upload destination.",0);return;}
@@ -59,14 +59,12 @@ static void GSRoute(id localAssets){
    NSError *error=nil;NSDictionary *accounts=GSRequest(@{@"op":@"accounts"},&error);
    if(!account.length||![accounts[@"selected"]isEqual:account]){GSImportResult(@"The destination has changed. Check the backup integration settings.",0);return;}
    NSDictionary *options=GSRequest(@{@"op":@"options"},&error);NSUInteger queued=0;
-   for(PHAsset *asset in selection){@autoreleasepool{
+   for(NSString *localIdentifier in selection){@autoreleasepool{
     if(error||!options)break;
     if(!GSImportAuthorized(account,identity)){error=[NSError errorWithDomain:@"GoToHP.Import" code:1 userInfo:nil];break;}
-    NSURL *dir=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
-    BOOL created=[NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error];
-    NSArray *files=created?GSExportAsset(asset,dir,&error):nil;
-    NSString *job=files&&GSImportAuthorized(account,identity)?GSImportFiles(files,account,options[@"quality"],asset.creationDate,&error):nil;
-    [NSFileManager.defaultManager removeItemAtURL:dir error:nil];
+    NSString *job=GSImportAuthorized(account,identity)?GSImportPhotoIdentifierChecked(localIdentifier,account,options[@"quality"]?:@"original",^BOOL{
+     return GSImportAuthorized(account,identity);
+    },&error):nil;
     if(!job){if(!error)error=[NSError errorWithDomain:@"GoToHP.Import" code:2 userInfo:nil];break;}queued++;
    }}
    GSImportResult(queued==selection.count?nil:@"Could not add photos to the queue. Check the account and photo access.",queued);

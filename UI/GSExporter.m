@@ -32,11 +32,14 @@ NSArray<NSURL *> *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error)
  dispatch_sync(exports,^{@autoreleasepool{files=GSWriteOriginalResources(asset,directory,&failure);}});
  if(error)*error=failure;return files;
 }
-NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){
+static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSString *sourceID,NSError **error){
  NSMutableArray *resources=[NSMutableArray array];
  for(NSURL *u in files){NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:u.path error:error];if(!attrs||![attrs[NSFileType]isEqual:NSFileTypeRegular])return nil;[resources addObject:@{@"name":u.lastPathComponent,@"size":attrs[NSFileSize]}];}
- NSDictionary *begin=GSRequest(@{@"op":@"begin",@"account":account?:@"",@"quality":quality?:@"original",@"timestamp":@((long long)(date?:NSDate.date).timeIntervalSince1970),@"resources":resources},error);
+ NSMutableDictionary *request=[@{@"op":@"begin",@"account":account?:@"",@"quality":quality?:@"original",@"timestamp":@((long long)(date?:NSDate.date).timeIntervalSince1970),@"resources":resources}mutableCopy];
+ if(sourceID.length)request[@"sourceID"]=sourceID;
+ NSDictionary *begin=GSRequest(request,error);
  NSString *identifier=begin[@"id"];if(!identifier)return nil;
+ if([begin[@"duplicate"]boolValue])return identifier;
  BOOL success=NO;
  @try {
  for(NSUInteger i=0;i<files.count;i++){
@@ -49,4 +52,45 @@ NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *qual
  }
  NSDictionary *sealed=GSRequest(@{@"op":@"seal",@"id":identifier},error);success=sealed!=nil;return sealed[@"id"];
  } @finally {if(!success)GSRequest(@{@"op":@"cancel",@"id":identifier},nil);}
+}
+NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){
+ return GSImportFilesWithSource(files,account,quality,date,nil,error);
+}
+NSString *GSImportPhotoIdentifier(NSString *localIdentifier,NSString *account,NSString *quality,NSError **error){
+ return GSImportPhotoIdentifierChecked(localIdentifier,account,quality,nil,error);
+}
+NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){
+ if(!localIdentifier.length||!account.length){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:3 userInfo:nil];return nil;}
+ // One transaction queue spans source lookup -> PhotoKit export -> queue begin.
+ // This prevents two native callbacks for the same asset from both scanning and staging it.
+ static dispatch_queue_t imports;static dispatch_once_t once;
+ dispatch_once(&once,^{imports=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);});
+ __block NSString *job=nil;__block NSError *failure=nil;
+ dispatch_sync(imports,^{@autoreleasepool{
+  if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
+  NSDictionary *existing=GSRequest(@{@"op":@"source_lookup",@"account":account,@"quality":quality?:@"original",@"sourceID":localIdentifier},&failure);
+  if(existing&&[existing[@"found"]boolValue]){
+   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
+   if([existing[@"state"]isEqual:@"failed"]){
+    if([existing[@"retryable"]boolValue]){
+     if(!GSRequest(@{@"op":@"retry",@"id":existing[@"id"]?:@""},&failure))return;
+    }else{failure=[NSError errorWithDomain:@"Gunshot.DuplicateSafety" code:1 userInfo:nil];return;}
+   }
+   job=[existing[@"id"]copy];
+   return;
+  }
+  if(failure)return;
+  PHFetchResult *found=[PHAsset fetchAssetsWithLocalIdentifiers:@[localIdentifier] options:nil];
+  __block PHAsset *asset=nil;
+  [found enumerateObjectsUsingBlock:^(PHAsset *candidate,NSUInteger i,BOOL *stop){asset=candidate;*stop=YES;}];
+  if(!asset){failure=[NSError errorWithDomain:@"Gunshot" code:4 userInfo:nil];return;}
+  NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
+  if(![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&failure])return;
+  @try {
+   NSArray *files=GSExportAsset(asset,directory,&failure);
+   if(files&&authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
+   if(files)job=GSImportFilesWithSource(files,account,quality,asset.creationDate,localIdentifier,&failure);
+  } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
+ }});
+ if(error)*error=failure;return job;
 }

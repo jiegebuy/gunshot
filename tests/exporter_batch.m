@@ -11,13 +11,26 @@ static BOOL IncludeUnreadable;
 static atomic_int ActiveExports,PeakExports;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
+static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
 static NSData *OriginalBytes(BOOL movie){
  NSMutableData *bytes=[NSMutableData dataWithLength:70013];uint8_t *p=bytes.mutableBytes;
  for(NSUInteger i=0;i<bytes.length;i++)p[i]=(uint8_t)(i*17+(movie?3:7));
  memcpy(p,"\0\0\0\x18" "ftyp",8);memcpy(p+8,movie?"qt  ":"heic",4);return bytes;
 }
+@interface PHFetchResult ()
+@property(nonatomic,strong) NSArray *items;
+@end
+@implementation PHFetchResult
+- (void)enumerateObjectsUsingBlock:(void (^)(PHAsset *,NSUInteger,BOOL *))block{BOOL stop=NO;NSUInteger i=0;for(PHAsset *asset in self.items){block(asset,i++,&stop);if(stop)break;}}
+@end
 @implementation PHAsset
-+ (PHFetchResult *)fetchAssetsWithLocalIdentifiers:(NSArray *)ids options:(id)options{assert(NO);return nil;}
++ (PHFetchResult *)fetchAssetsWithLocalIdentifiers:(NSArray *)ids options:(id)options{
+ assert(!NSThread.isMainThread&&ids.count==1);
+ NSString *identifier=ids.firstObject;PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;
+ asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];asset.mediaType=PHAssetMediaTypeImage;
+ if(identifier.intValue==5)asset.mediaSubtypes=PHAssetMediaSubtypePhotoLive;
+ PHFetchResult *result=[PHFetchResult new];result.items=@[asset];return result;
+}
 @end
 @interface PHAssetResource ()
 @property(nonatomic) BOOL unreadable;
@@ -54,8 +67,13 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
  if([op isEqual:@"options"])return @{@"quality":@"original"};
+ if([op isEqual:@"source_lookup"]){
+  NSString *job=SourceJobs[request[@"sourceID"]];return job?@{@"found":@YES,@"id":job,@"state":@"completed"}:@{@"found":@NO};
+ }
  if([op isEqual:@"begin"]){
   assert([request[@"quality"]isEqual:@"original"]&&[request[@"account"]isEqual:@"fixture@example.com"]&&[request[@"timestamp"]longLongValue]==123);
+  assert([request[@"sourceID"]length]>0);
+  SourceJobs[request[@"sourceID"]]=@"fixture-job";
   ExpectedResources=request[@"resources"];Received=[NSMutableArray array];
   for(NSDictionary *resource in ExpectedResources){assert([resource[@"size"]intValue]==70013);[Received addObject:[NSMutableData data]];}
   return @{@"id":@"fixture-job"};
@@ -75,17 +93,18 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
 }
 static NSDictionary *Run(void){
  __block NSDictionary *done=nil;
- assert(GSStartBatchImport(60,@"album",YES,^id(NSUInteger index){
-  PHAsset *asset=[PHAsset new];asset.localIdentifier=[NSString stringWithFormat:@"%lu",(unsigned long)index];
-  asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];asset.mediaType=PHAssetMediaTypeImage;
-  if(index==5)asset.mediaSubtypes=PHAssetMediaSubtypePhotoLive;return asset;
- },@"fixture@example.com",@"fixture",nil,^(NSDictionary *state){done=state;}));
+ NSMutableArray *ids=[NSMutableArray array];for(NSUInteger index=0;index<60;index++)[ids addObject:[NSString stringWithFormat:@"%lu",(unsigned long)index]];
+ assert(GSStartBatchImport(60,@"album",YES,GSPhotoIdentifierProvider(ids),@"fixture@example.com",@"fixture",nil,^(NSDictionary *state){done=state;}));
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:20];
  while(!done&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(done);return done;
 }
 int main(void){@autoreleasepool{
+ SourceJobs=[NSMutableDictionary dictionary];
  NSDictionary *result=Run();assert(Queued==60&&Written==61&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
+ NSUInteger writtenAfterFirst=Written;result=Run();
+ assert(Queued==60&&Written==writtenAfterFirst&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
+ [SourceJobs removeAllObjects];
  IncludeUnreadable=YES;result=Run();assert(Queued==119&&[result[@"queued"]intValue]==59&&[result[@"failed"]intValue]==1&&[result[@"remaining"]intValue]==0);
  assert([result[@"failureCodes"][@"export_failed"]intValue]==1);
  IncludeUnreadable=NO;

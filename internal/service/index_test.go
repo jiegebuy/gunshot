@@ -96,7 +96,7 @@ func TestChangedOptionsAndRetryArePersisted(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, op := range []string{"retry", "retry_failed"} {
-		job.State, job.Attempts, job.Next, job.CancelRequested = "failed", 4, 12345, true
+		job.State, job.Error, job.Attempts, job.Next, job.CancelRequested = "failed", "upload_failed_check_account_and_network", 4, 12345, true
 		if err := e.save(); err != nil {
 			t.Fatal(err)
 		}

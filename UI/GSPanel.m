@@ -434,8 +434,8 @@
   if(status!=PHAuthorizationStatusAuthorized&&status!=PHAuthorizationStatusLimited){[self message:GSL(@"Allow access to your photo library.")];return;}
   GSAlbumPicker *albums=[[GSAlbumPicker alloc]initWithStyle:UITableViewStyleInsetGrouped];
   __weak GSPanel *weak=self;
-  albums.selection=^(PHFetchResult<PHAsset *> *assets){
-   [weak startImportCount:assets.count source:@"album" assets:YES provider:^id(NSUInteger index){return [assets objectAtIndex:index];}];
+  albums.selection=^(NSArray<NSString *> *identifiers){
+   [weak startImportCount:identifiers.count source:@"album" assets:YES provider:GSPhotoIdentifierProvider(identifiers)];
   };
   [self presentViewController:[[UINavigationController alloc]initWithRootViewController:albums] animated:YES completion:nil];
  });}];
@@ -459,7 +459,9 @@
  return [NSString stringWithFormat:@"%@\n%@",counts,help];
 }
 - (void)importAssets:(NSArray<PHAsset *> *)assets{
- NSArray *selection=[assets copy];[self startImportCount:selection.count source:@"share" assets:YES provider:^id(NSUInteger index){return selection[index];}];
+ NSMutableArray<NSString *> *identifiers=[NSMutableArray arrayWithCapacity:assets.count];
+ for(PHAsset *asset in assets)if(asset.localIdentifier.length)[identifiers addObject:asset.localIdentifier];
+ [self startImportCount:identifiers.count source:@"share" assets:YES provider:GSPhotoIdentifierProvider(identifiers)];
 }
 - (void)importURLs:(NSArray<NSURL *> *)urls{
  NSArray *selection=[urls copy];[self startImportCount:selection.count source:@"share" assets:NO provider:^id(NSUInteger index){return selection[index];}];

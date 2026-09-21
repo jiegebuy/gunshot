@@ -15,8 +15,10 @@
 @interface GSBackupTransfer : NSObject
 @property(atomic) BOOL cancelled;
 @property(atomic) BOOL cancelGo;
+@property(atomic) BOOL cancelSharedJob;
 @property(atomic) BOOL reconciling;
 @property(atomic) BOOL finished;
+@property(atomic) BOOL sourceRegistered;
 @property(atomic) double progress;
 @property(atomic,copy) NSString *jobID;
 @property(nonatomic,copy) NSString *account;
@@ -31,6 +33,9 @@ static NSObject *GSLock;
 static NSMutableDictionary *GSCounts;
 // Each overlapping request owns one registration, even for the same asset.
 static NSCountedSet *GSReconciling;
+// Source registrations prevent one duplicate native request from cancelling a
+// Go job that another request for the same PhotoKit asset is still observing.
+static NSCountedSet *GSActiveSources;
 static BOOL GSMethod(id object,NSString *name,const char *encoding){
  Method m=class_getInstanceMethod(object_getClass(object),NSSelectorFromString(name));return m&&!strcmp(method_getTypeEncoding(m),encoding);
 }
@@ -66,6 +71,14 @@ static BOOL GSCanPrepare(NSDictionary *options){
 static BOOL GSStillAuthorized(GSBackupTransfer *transfer){
  return !transfer.cancelled&&GSNativeRoutingEnabled()&&[GSNativeRoutingAccount()isEqual:transfer.account]&&GSNativeIdentityMatches(transfer.identityIdentifier);
 }
+// GSLock must be held. Returns YES only when this transfer released the final
+// observer for the source, making foreground cancellation of the shared job safe.
+static BOOL GSReleaseSourceLocked(GSBackupTransfer *transfer){
+ if(!transfer.sourceRegistered||!transfer.localID.length)return NO;
+ NSUInteger count=[GSActiveSources countForObject:transfer.localID];
+ [GSActiveSources removeObject:transfer.localID];transfer.sourceRegistered=NO;
+ return count==1;
+}
 static void GSReportProgress(id request,GSBackupTransfer *transfer,NSDictionary *state){
  NSNumber *uploaded=state[@"uploaded"],*total=state[@"total"];
  if(![uploaded isKindOfClass:NSNumber.class]||![total isKindOfClass:NSNumber.class]||
@@ -88,11 +101,14 @@ static void GSStart(id request,SEL selector,IMP original){
  if(existing){if(existing.reconciling)((void(*)(id,SEL))original)(request,selector);return;}
  if(!GSNativeRoutingEnabled()){((void(*)(id,SEL))original)(request,selector);return;}
  PHAsset *asset=GSGet(request,@"asset");
- // Export the PHAsset original, not a compressed GMUUploadAsset.
- if(![asset isKindOfClass:PHAsset.class]){GSCount(@"unsupported");GSFail(request,1);return;}
- BOOL reconciling;@synchronized(GSLock){reconciling=[GSReconciling containsObject:asset.localIdentifier];}
+ // Capture only PhotoKit's stable identifier before hopping to our worker.
+ // Retaining Google Photos' PHAsset proxy across queues is unsafe on 7.92/iPadOS 27.
+ NSString *localIdentifier=[asset isKindOfClass:PHAsset.class]?[asset.localIdentifier copy]:nil;
+ if(!localIdentifier.length){GSCount(@"unsupported");GSFail(request,1);return;}
+ BOOL reconciling;@synchronized(GSLock){reconciling=[GSReconciling containsObject:localIdentifier];}
  if(reconciling){((void(*)(id,SEL))original)(request,selector);return;}
- GSBackupTransfer *transfer=[GSBackupTransfer new];transfer.localID=asset.localIdentifier;
+ GSBackupTransfer *transfer=[GSBackupTransfer new];transfer.localID=localIdentifier;
+ @synchronized(GSLock){[GSActiveSources addObject:localIdentifier];transfer.sourceRegistered=YES;}
  objc_setAssociatedObject(request,&GSTransferKey,transfer,OBJC_ASSOCIATION_RETAIN_NONATOMIC);GSCount(@"intercepted");
  dispatch_async(dispatch_get_main_queue(),^{
   NSDictionary *account=GSNativeAccountSummary();NSString *destination=GSNativeRoutingAccount();
@@ -112,14 +128,17 @@ static void GSStart(id request,SEL selector,IMP original){
    __block BOOL authorized=NO;
    dispatch_sync(dispatch_get_main_queue(),^{authorized=GSStillAuthorized(transfer);});
    if(!authorized){if(!error&&!transfer.cancelled)GSCount(@"authorizationChanged");error=[NSError errorWithDomain:@"GoToHP.Backup" code:2 userInfo:nil];}
-   NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
-   NSArray *files=nil;
-   if(!error&&[NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error])files=GSExportAsset(asset,directory,&error);
+   NSString *job=!error?GSImportPhotoIdentifierChecked(localIdentifier,destination,options[@"quality"]?:@"original",^BOOL{
+    __block BOOL allowed=NO;dispatch_sync(dispatch_get_main_queue(),^{allowed=GSStillAuthorized(transfer);});return allowed;
+   },&error):nil;
    dispatch_sync(dispatch_get_main_queue(),^{authorized=GSStillAuthorized(transfer);});
-   if(files&&!authorized&&!transfer.cancelled)GSCount(@"authorizationChanged");
-   NSString *job=(authorized&&files)?GSImportFiles(files,destination,options[@"quality"]?:@"original",asset.creationDate,&error):nil;
-   [NSFileManager.defaultManager removeItemAtURL:directory error:nil];transfer.jobID=job;
-   if(job&&transfer.cancelled&&transfer.cancelGo)GSRequest(@{@"op":@"cancel",@"id":job},nil);
+   if(job&&!authorized&&!transfer.cancelled)GSCount(@"authorizationChanged");
+   if(!authorized&&job){
+    BOOL last=NO;@synchronized(GSLock){last=GSReleaseSourceLocked(transfer);}
+    if(last)GSRequest(@{@"op":@"cancel",@"id":job},nil);job=nil;
+   }
+   transfer.jobID=job;
+   if(job&&transfer.cancelled&&transfer.cancelGo&&transfer.cancelSharedJob)GSRequest(@{@"op":@"cancel",@"id":job},nil);
    if(job)GSCount(@"queued");
    BOOL completed=NO;NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:24*60*60];
    while(job&&!transfer.cancelled&&deadline.timeIntervalSinceNow>0){@autoreleasepool{
@@ -151,6 +170,7 @@ static void GSFinish(id request,BOOL success){
  @synchronized(GSLock){
   if(!t||t.finished)return;
   t.finished=YES;if(success)t.progress=1;
+  GSReleaseSourceLocked(t);
   if(t.reconciling&&!t.cancelled)[GSReconciling removeObject:t.localID];
   if(t.reconciling)GSCount(success?@"nativeReconciled":@"reconcileFailed");
  }
@@ -181,10 +201,13 @@ static void GSBindStart(Class c){
   GSBackupTransfer *t=objc_getAssociatedObject(request,&GSTransferKey);t.cancelGo=GSUploadHostForeground();
   @synchronized(GSLock){
    if(t.reconciling&&!t.finished&&!t.cancelled)[GSReconciling removeObject:t.localID];
+   t.cancelSharedJob=GSReleaseSourceLocked(t);
    t.cancelled=YES;
   }
   // Background cancellation preserves the Go job for foreground resumption.
-  if(t.jobID&&t.cancelGo)dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{GSRequest(@{@"op":@"cancel",@"id":t.jobID},nil);});
+  // Foreground cancellation may cancel Go only after the last request observing
+  // this source has released it; duplicate callbacks therefore cannot kill peers.
+  if(t.jobID&&t.cancelGo&&t.cancelSharedJob)dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{GSRequest(@{@"op":@"cancel",@"id":t.jobID},nil);});
   ((void(*)(id,SEL))oldCancel)(request,cancel);
  }));
 }
@@ -256,7 +279,7 @@ void GSInstallBackupRequests(void){
  if(GSPhotosCompletionForClass(asset)==GSPhotosCompletionUnavailable)return;
  Method ac=class_getInstanceMethod(asset,NSSelectorFromString(GSPhotosAssetCompletion(asset))),lc=class_getInstanceMethod(live,NSSelectorFromString(@"didCompleteWithError:resultantMediaItem:"));
  if(!ac||!lc||strcmp(method_getTypeEncoding(ac),GSPhotosAssetCompletionABI(asset))||strcmp(method_getTypeEncoding(lc),"v32@0:8@16@24"))return;
- GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSReconciling=[NSCountedSet new];
+ GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSReconciling=[NSCountedSet new];GSActiveSources=[NSCountedSet new];
  GSBindStart(asset);GSBindStart(live);GSBindCompletion(asset,NO);GSBindCompletion(live,YES);
  GSBindProgress(asset);GSBindProgress(live);
  GSBindBackground(NSClassFromString(@"GMUBackgroundAssetUploadRequest"));

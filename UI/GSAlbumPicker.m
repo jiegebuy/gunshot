@@ -48,13 +48,16 @@
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   PHFetchOptions *options=[PHFetchOptions new];options.includeHiddenAssets=NO;
   PHFetchResult *assets=[PHAsset fetchAssetsInAssetCollection:(PHAssetCollection *)collection options:options];
+  NSMutableArray<NSString *> *identifiers=[NSMutableArray arrayWithCapacity:assets.count];
+  [assets enumerateObjectsUsingBlock:^(PHAsset *asset,NSUInteger i,BOOL *stop){if(asset.localIdentifier.length)[identifiers addObject:asset.localIdentifier];}];
+  NSArray<NSString *> *selectionIDs=[identifiers copy];
   dispatch_async(dispatch_get_main_queue(),^{
    self.loading=NO;
-   UIAlertController *confirm=[UIAlertController alertControllerWithTitle:collection.localizedTitle?:GSL(@"Album") message:assets.count?[NSString stringWithFormat:GSL(@"Add %lu items to the queue? Originals are prepared one at a time. Keep the app open."),(unsigned long)assets.count]:GSL(@"No accessible photos in this album. Check photo permissions.") preferredStyle:UIAlertControllerStyleAlert];
+   UIAlertController *confirm=[UIAlertController alertControllerWithTitle:collection.localizedTitle?:GSL(@"Album") message:selectionIDs.count?[NSString stringWithFormat:GSL(@"Add %lu items to the queue? Originals are prepared one at a time. Keep the app open."),(unsigned long)selectionIDs.count]:GSL(@"No accessible photos in this album. Check photo permissions.") preferredStyle:UIAlertControllerStyleAlert];
    [confirm addAction:[UIAlertAction actionWithTitle:GSL(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
-   if(assets.count)[confirm addAction:[UIAlertAction actionWithTitle:GSL(@"Add") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-    void(^selection)(PHFetchResult *)=self.selection;
-    [self dismissViewControllerAnimated:YES completion:^{if(selection)selection(assets);}];
+   if(selectionIDs.count)[confirm addAction:[UIAlertAction actionWithTitle:GSL(@"Add") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+    void(^selection)(NSArray<NSString *> *)=self.selection;
+    [self dismissViewControllerAnimated:YES completion:^{if(selection)selection(selectionIDs);}];
    }]];
    [self presentViewController:confirm animated:YES completion:nil];
   });
