@@ -69,6 +69,13 @@ type SourceReceipt struct {
 	OriginalPolicy int    `json:"originalPolicy,omitempty"`
 	Completed      int64  `json:"completed"`
 }
+type FingerprintReceipt struct {
+	Fingerprint    string `json:"fingerprint"`
+	ID             string `json:"id"`
+	MediaKey       string `json:"mediaKey"`
+	OriginalPolicy int    `json:"originalPolicy,omitempty"`
+	Completed      int64  `json:"completed"`
+}
 type Request struct {
 	NativeID  string     `json:"nativeID,omitempty"`
 	SourceID  string     `json:"sourceID,omitempty"`
@@ -94,20 +101,22 @@ type Progress struct {
 }
 type Runner func(context.Context, []string, string, string, func(Progress)) (string, error)
 type Engine struct {
-	nativeRelay            *nativeRelay
-	importHashes           map[string][]hash.Hash
-	mu                     sync.Mutex
-	root                   string
-	state                  State
-	jobsByID               map[string]*Job // Derived index; guarded by mu, never persisted.
-	sourceReceipts         map[string]SourceReceipt
-	receiptsByID           map[string]SourceReceipt
-	active                 map[string]context.CancelFunc
-	runner                 Runner
-	online, wifi, charging bool
-	stopped                bool
-	wg                     sync.WaitGroup
-	fault                  bool
+	nativeRelay             *nativeRelay
+	importHashes            map[string][]hash.Hash
+	mu                      sync.Mutex
+	root                    string
+	state                   State
+	jobsByID                map[string]*Job // Derived index; guarded by mu, never persisted.
+	sourceReceipts          map[string]SourceReceipt
+	receiptsByID            map[string]SourceReceipt
+	fingerprintReceipts     map[string]FingerprintReceipt
+	fingerprintReceiptsByID map[string]FingerprintReceipt
+	active                  map[string]context.CancelFunc
+	runner                  Runner
+	online, wifi, charging  bool
+	stopped                 bool
+	wg                      sync.WaitGroup
+	fault                   bool
 }
 
 var errRequest = errors.New("invalid request")
@@ -168,7 +177,14 @@ func Open(root string, runner Runner) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner}
+	fingerprintReceipts, fingerprintReceiptsByID, err := loadFingerprintReceipts(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := bootstrapFingerprintReceipts(root, fingerprintReceipts, fingerprintReceiptsByID, s.Jobs); err != nil {
+		return nil, err
+	}
+	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, fingerprintReceipts: fingerprintReceipts, fingerprintReceiptsByID: fingerprintReceiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner}
 	for _, j := range s.Jobs {
 		en.jobsByID[j.ID] = j
 		switch j.State {

@@ -126,11 +126,16 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		next := e.state.Jobs[:0]
 		for _, j := range e.state.Jobs {
 			if j.State == "completed" || j.State == "cancelled" {
-				// A completed source-backed job is removable only after its durable
-				// receipt exists. If receipt persistence failed, keep the row as the
-				// authoritative dedup record instead of risking a future re-upload.
-				if j.State == "completed" && j.SourceKey != "" {
-					if _, ok := e.sourceReceipts[j.SourceKey]; !ok {
+				// Completed rows are removable only after the durable dedup evidence
+				// needed for their generation exists. Source-backed rows retain the
+				// early PhotoKit lookup; legacy rows retain their content fingerprint.
+				if j.State == "completed" {
+					if j.SourceKey != "" {
+						if _, ok := e.sourceReceipts[j.SourceKey]; !ok {
+							next = append(next, j)
+							continue
+						}
+					} else if _, ok := e.fingerprintReceipts[j.Fingerprint]; !ok {
 						next = append(next, j)
 						continue
 					}
@@ -168,6 +173,9 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 	if j == nil {
 		if r.Op == "job" {
 			if receipt, ok := e.receiptsByID[r.ID]; ok {
+				return map[string]any{"id": receipt.ID, "state": "completed", "mediaKey": receipt.MediaKey, "uploaded": 0, "total": 0}, nil
+			}
+			if receipt, ok := e.fingerprintReceiptsByID[r.ID]; ok {
 				return map[string]any{"id": receipt.ID, "state": "completed", "mediaKey": receipt.MediaKey, "uploaded": 0, "total": 0}, nil
 			}
 		}

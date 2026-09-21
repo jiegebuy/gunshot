@@ -18,6 +18,7 @@ import (
 )
 
 const sourceReceiptsFile = "source-receipts.jsonl"
+const fingerprintReceiptsFile = "fingerprint-receipts.jsonl"
 
 func validID(s string) bool {
 	if len(s) != 32 {
@@ -107,14 +108,17 @@ func (e *Engine) findSourceReceipt(account, quality, sourceID string) (*SourceRe
 	}
 	return &receipt, nil
 }
-func (e *Engine) recordSourceReceipt(j *Job) error {
-	if j == nil || j.SourceKey == "" || j.MediaKey == "" || (j.Quality == "original" && j.OriginalPolicy == 0) {
+func (e *Engine) recordSourceReceiptValue(sourceKey, id, mediaKey string, originalPolicy int, completed int64) error {
+	if sourceKey == "" || !validSHA256(sourceKey) || !validID(id) || mediaKey == "" || len(mediaKey) > 8192 || originalPolicy < 0 || originalPolicy > 1 {
 		return nil
 	}
-	if _, exists := e.sourceReceipts[j.SourceKey]; exists {
+	if completed <= 0 {
+		completed = time.Now().Unix()
+	}
+	if _, exists := e.sourceReceipts[sourceKey]; exists {
 		return nil
 	}
-	receipt := SourceReceipt{SourceKey: j.SourceKey, ID: j.ID, MediaKey: j.MediaKey, OriginalPolicy: j.OriginalPolicy, Completed: time.Now().Unix()}
+	receipt := SourceReceipt{SourceKey: sourceKey, ID: id, MediaKey: mediaKey, OriginalPolicy: originalPolicy, Completed: completed}
 	line, err := json.Marshal(receipt)
 	if err != nil {
 		return err
@@ -138,8 +142,108 @@ func (e *Engine) recordSourceReceipt(j *Job) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	e.sourceReceipts[j.SourceKey] = receipt
-	e.receiptsByID[j.ID] = receipt
+	e.sourceReceipts[sourceKey] = receipt
+	e.receiptsByID[id] = receipt
+	return nil
+}
+func (e *Engine) recordSourceReceipt(j *Job) error {
+	if j == nil || j.SourceKey == "" || j.MediaKey == "" || (j.Quality == "original" && j.OriginalPolicy == 0) {
+		return nil
+	}
+	return e.recordSourceReceiptValue(j.SourceKey, j.ID, j.MediaKey, j.OriginalPolicy, time.Now().Unix())
+}
+func loadFingerprintReceipts(root string) (map[string]FingerprintReceipt, map[string]FingerprintReceipt, error) {
+	byFingerprint := map[string]FingerprintReceipt{}
+	byID := map[string]FingerprintReceipt{}
+	file, err := os.Open(filepath.Join(root, fingerprintReceiptsFile))
+	if os.IsNotExist(err) {
+		return byFingerprint, byID, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	for scanner.Scan() {
+		var receipt FingerprintReceipt
+		if json.Unmarshal(scanner.Bytes(), &receipt) != nil || !validSHA256(receipt.Fingerprint) || !validID(receipt.ID) || receipt.MediaKey == "" || len(receipt.MediaKey) > 8192 || receipt.Completed <= 0 || receipt.OriginalPolicy < 0 || receipt.OriginalPolicy > 1 {
+			return nil, nil, errors.New("invalid fingerprint receipt log; restore backup")
+		}
+		byFingerprint[receipt.Fingerprint] = receipt
+		byID[receipt.ID] = receipt
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	return byFingerprint, byID, nil
+}
+func appendFingerprintReceipts(root string, receipts []FingerprintReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+	path := filepath.Join(root, fingerprintReceiptsFile)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if err = os.Chmod(path, 0600); err != nil {
+		file.Close()
+		return err
+	}
+	for _, receipt := range receipts {
+		line, marshalErr := json.Marshal(receipt)
+		if marshalErr != nil {
+			file.Close()
+			return marshalErr
+		}
+		if _, err = file.Write(append(line, '\n')); err != nil {
+			file.Close()
+			return err
+		}
+	}
+	if err = file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+func bootstrapFingerprintReceipts(root string, byFingerprint map[string]FingerprintReceipt, byID map[string]FingerprintReceipt, jobs []*Job) error {
+	missing := make([]FingerprintReceipt, 0)
+	for _, j := range jobs {
+		if j == nil || j.State != "completed" || !validSHA256(j.Fingerprint) || j.MediaKey == "" || (j.Quality == "original" && j.OriginalPolicy == 0) {
+			continue
+		}
+		if _, exists := byFingerprint[j.Fingerprint]; exists {
+			continue
+		}
+		receipt := FingerprintReceipt{Fingerprint: j.Fingerprint, ID: j.ID, MediaKey: j.MediaKey, OriginalPolicy: j.OriginalPolicy, Completed: max(j.Created, int64(1))}
+		missing = append(missing, receipt)
+		byFingerprint[receipt.Fingerprint] = receipt
+		byID[receipt.ID] = receipt
+	}
+	if err := appendFingerprintReceipts(root, missing); err != nil {
+		for _, receipt := range missing {
+			delete(byFingerprint, receipt.Fingerprint)
+			delete(byID, receipt.ID)
+		}
+		return err
+	}
+	return nil
+}
+func (e *Engine) recordFingerprintReceipt(j *Job) error {
+	if j == nil || j.State != "completed" || !validSHA256(j.Fingerprint) || j.MediaKey == "" || (j.Quality == "original" && j.OriginalPolicy == 0) {
+		return nil
+	}
+	if _, exists := e.fingerprintReceipts[j.Fingerprint]; exists {
+		return nil
+	}
+	receipt := FingerprintReceipt{Fingerprint: j.Fingerprint, ID: j.ID, MediaKey: j.MediaKey, OriginalPolicy: j.OriginalPolicy, Completed: time.Now().Unix()}
+	if err := appendFingerprintReceipts(e.root, []FingerprintReceipt{receipt}); err != nil {
+		return err
+	}
+	e.fingerprintReceipts[receipt.Fingerprint] = receipt
+	e.fingerprintReceiptsByID[receipt.ID] = receipt
 	return nil
 }
 func (e *Engine) begin(r Request, owner string) (any, error) {
@@ -258,6 +362,22 @@ func (e *Engine) seal(j *Job) (any, error) {
 	}
 	fingerprint := hex.EncodeToString(h.Sum(nil))
 	delete(e.importHashes, j.ID)
+	if receipt, ok := e.fingerprintReceipts[fingerprint]; ok {
+		// A legacy completion may predate source IDs. The first post-upgrade scan
+		// binds its PhotoKit source to the durable completion so later scans stop
+		// before PhotoKit export rather than hashing the original again.
+		if j.SourceKey != "" {
+			if err := e.recordSourceReceiptValue(j.SourceKey, receipt.ID, receipt.MediaKey, receipt.OriginalPolicy, receipt.Completed); err != nil {
+				return nil, err
+			}
+		}
+		j.State = "cancelled"
+		if err := e.save(); err != nil {
+			return nil, err
+		}
+		_ = os.RemoveAll(e.jobDir(j.ID))
+		return map[string]any{"id": receipt.ID, "duplicate": true}, nil
+	}
 	for _, old := range e.state.Jobs {
 		// Older builds could mark original completed from a saver hash match.
 		// Do not reuse that unverified completion for a new original request.
@@ -265,6 +385,11 @@ func (e *Engine) seal(j *Job) (any, error) {
 			continue
 		}
 		if old.ID != j.ID && old.Fingerprint == fingerprint && old.State != "cancelled" {
+			if old.State == "completed" && old.MediaKey != "" && j.SourceKey != "" {
+				if err := e.recordSourceReceiptValue(j.SourceKey, old.ID, old.MediaKey, old.OriginalPolicy, max(old.Created, int64(1))); err != nil {
+					return nil, err
+				}
+			}
 			j.State = "cancelled"
 			if err := e.save(); err != nil {
 				return nil, err
@@ -369,6 +494,7 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 		// Persist source identity separately from queue history so clearing
 		// completed rows cannot make Google Photos scan/upload the asset again.
 		_ = e.recordSourceReceipt(j)
+		_ = e.recordFingerprintReceipt(j)
 	case errors.Is(err, errRemoteComponentExists):
 		j.State = "failed"
 		j.Error = "remote_live_photo_component_exists"

@@ -14,7 +14,8 @@ func TestJobIndexSurvivesRestartAndHistoryCleanup(t *testing.T) {
 	duplicate := importTest(t, e, "original")
 	pending := importTest(t, e, "saver")
 	failed := importTest(t, e, "quota")
-	completed.State, failed.State = "completed", "failed"
+	completed.State, completed.MediaKey, completed.OriginalPolicy = "completed", "completed-media-key", 1
+	failed.State = "failed"
 	if err := e.save(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,12 +46,23 @@ func TestJobIndexSurvivesRestartAndHistoryCleanup(t *testing.T) {
 			t.Fatal("removed job retained by the queue backing array")
 		}
 	}
-	for _, id := range []string{completed.ID, duplicate.ID} {
-		if _, err := reopened.handle(Request{Op: "job", ID: id}, "photos"); err == nil {
-			t.Fatal("removed job remains accessible through the protocol")
-		}
+	if state, err := reopened.handle(Request{Op: "job", ID: completed.ID}, "photos"); err != nil || state.(map[string]any)["mediaKey"] != completed.MediaKey {
+		t.Fatal("completed receipt did not survive queue-history cleanup")
 	}
-	fresh := importTest(t, reopened, "original")
+	if _, err := reopened.handle(Request{Op: "job", ID: duplicate.ID}, "photos"); err == nil {
+		t.Fatal("cancelled duplicate remains accessible through the protocol")
+	}
+	v, err := reopened.begin(Request{Account: "a@example.com", Quality: "original", Resources: []Resource{{Name: "fresh.jpg", Size: 4}}}, "photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := reopened.find(v.(map[string]any)["id"].(string))
+	if err := reopened.appendChunk(fresh, Request{Index: 0, Offset: 0, Data: []byte("abcd")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.seal(fresh); err != nil {
+		t.Fatal(err)
+	}
 	if fresh.State != "pending" || reopened.find(fresh.ID) != fresh {
 		t.Fatal("new import after cleanup used a stale index")
 	}

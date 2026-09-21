@@ -144,6 +144,95 @@ func TestSourceReceiptSurvivesHistoryCleanupAndRestart(t *testing.T) {
 		t.Fatalf("receipt did not synthesize completed job state: %v", completed)
 	}
 }
+func TestLegacyFingerprintReceiptSurvivesCleanupAndBindsSource(t *testing.T) {
+	root := t.TempDir()
+	e, err := Open(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := importTest(t, e, "original")
+	legacy.State = "completed"
+	legacy.MediaKey = "legacy-remote-media-key"
+	legacy.OriginalPolicy = 1
+	if err := e.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, ok := reopened.fingerprintReceipts[legacy.Fingerprint]; !ok || receipt.ID != legacy.ID {
+		t.Fatalf("legacy completion was not migrated to fingerprint receipt: %v %v", receipt, ok)
+	}
+	if _, err := reopened.handle(Request{Op: "clear_completed"}, "photos"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.state.Jobs) != 0 {
+		t.Fatal("legacy completed history was not removable after fingerprint migration")
+	}
+
+	r := Request{Account: "a@example.com", Quality: "original", SourceID: "post-upgrade-photo-id", Resources: []Resource{{Name: "photo.jpg", Size: 3}}}
+	value, err := reopened.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := reopened.find(value.(map[string]any)["id"].(string))
+	if err := reopened.appendChunk(staged, Request{Index: 0, Offset: 0, Data: []byte("abc")}); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := reopened.seal(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := sealed.(map[string]any)
+	if result["id"] != legacy.ID || result["duplicate"] != true || staged.State != "cancelled" {
+		t.Fatalf("legacy fingerprint did not block re-upload: %v state=%s", result, staged.State)
+	}
+	receipt, err := reopened.findSourceReceipt(r.Account, r.Quality, r.SourceID)
+	if err != nil || receipt == nil || receipt.ID != legacy.ID {
+		t.Fatalf("first post-upgrade scan did not bind source identity: %v %v", receipt, err)
+	}
+	jobsBefore := len(reopened.state.Jobs)
+	duplicate, err := reopened.begin(r, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.(map[string]any)["id"] != legacy.ID || duplicate.(map[string]any)["duplicate"] != true || len(reopened.state.Jobs) != jobsBefore {
+		t.Fatal("bound legacy source was staged again")
+	}
+	state, err := reopened.handle(Request{Op: "job", ID: legacy.ID}, "photos")
+	if err != nil || state.(map[string]any)["mediaKey"] != "legacy-remote-media-key" {
+		t.Fatalf("fingerprint receipt did not preserve completed job lookup: %v %v", state, err)
+	}
+}
+func TestUnverifiedLegacyOriginalIsNotMigrated(t *testing.T) {
+	root := t.TempDir()
+	e, err := Open(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := importTest(t, e, "original")
+	legacy.State = "completed"
+	legacy.MediaKey = "legacy-unverified-key"
+	legacy.OriginalPolicy = 0
+	if err := e.save(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.fingerprintReceipts[legacy.Fingerprint]; ok {
+		t.Fatal("unverified legacy original was promoted to durable dedup proof")
+	}
+	if _, err := reopened.handle(Request{Op: "clear_completed"}, "photos"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.state.Jobs) != 1 || reopened.state.Jobs[0].ID != legacy.ID {
+		t.Fatal("unverified legacy original was cleared without safe dedup evidence")
+	}
+}
 func TestPartialImportNeverQueues(t *testing.T) {
 	e := newEngine(t, nil)
 	v, err := e.begin(Request{Account: "a", Quality: "original", Resources: []Resource{{"a.jpg", 3}}}, "photos")
