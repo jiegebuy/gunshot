@@ -16,7 +16,7 @@ static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned
   BOOL paused=[capacity[@"paused"]boolValue];
   if(!space&&!queue&&!paused){if(waited&&progress)progress(@{@"stage":@"exporting"});return YES;}
   if((space||queue)&&![capacity[@"releasableBytes"]unsignedLongLongValue]){
-   failure=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available.")}];return NO;
+   failure=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available."),@"storage":@{@"freeBytes":@(free),@"requiredAdditionalBytes":@(needed),@"reserveBytes":@(GSStorageReserve),@"retainedBytes":@(retained)}}];return NO;
   }
   waited=YES;
   if(progress)progress(@{@"stage":paused?@"waiting_upload_resume":@"waiting_storage",@"freeBytes":@(free),@"bufferedBytes":@(retained),@"reserveBytes":@(GSStorageReserve),@"bufferLimitBytes":@(GSStorageQueueLimit)});

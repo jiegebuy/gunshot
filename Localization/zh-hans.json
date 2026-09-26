@@ -136,5 +136,6 @@
   "No accessible photos in this album. Check photo permissions.": "此相册中无可访问的图片，请检查访问权限",
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "等待上传释放空间，随后会自动继续准备，请保持 App 开启。",
   "Preparation is waiting. Turn off Pause uploads to continue.": "准备已等待，请关闭“暂停上传”以继续。",
-  "Not enough space to prepare this original while keeping free space available.": "可用空间不足，无法在保留系统余量的同时准备此原文件。"
+  "Not enough space to prepare this original while keeping free space available.": "可用空间不足，无法在保留系统余量的同时准备此原文件。",
+  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n有 %lu 项原文件因空间不足暂未处理。释放空间后重新选择相册即可重试，已入队项目会自动去重。"
 }

@@ -4,7 +4,7 @@
 
 static NSString *Identity=@"identity-A",*Account=@"a@example.com";
 static NSUInteger Queued,Exports,Fetches,MaxFetch,LiveAssets,PeakAssets;
-static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline;
+static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline,LargeOriginal;
 static NSString *LastDirectory;
 @interface PHFetchResult ()
 @property(nonatomic,strong) NSArray *items;
@@ -60,6 +60,7 @@ NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
  if(authorization&&!authorization())return nil;
  if([identifier isEqual:@"missing"]){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:4 userInfo:nil];return nil;}
+ if(LargeOriginal&&[identifier isEqual:@"large"]){if(error)*error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{@"storage":@{@"freeBytes":@123}}];return nil;}
  if(FailExport&&[identifier isEqual:@"500"]){if(error)*error=[NSError errorWithDomain:@"private filename/token must not escape" code:7 userInfo:nil];return nil;}
  if(FailQueue){if(error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:5 userInfo:nil];return nil;}
  Queued++;return @"job";
@@ -100,5 +101,11 @@ int main(void){@autoreleasepool{
  assert(Queued==before&&[result[@"stopReason"]isEqual:@"background_expired"]);
  CancelDuringExport=NO;Offline=YES;result=Run(@[@"0"]);assert([result[@"stopReason"]isEqual:@"service_unavailable"]);
  Offline=NO;result=Run(@[@"0",@"1"]);assert(Queued==before+2&&[result[@"queued"]intValue]==2);
+ LargeOriginal=YES;before=Queued;result=Run(@[@"0",@"large",@"1"]);
+ assert(Queued==before+2&&[result[@"processed"]intValue]==3&&[result[@"remaining"]intValue]==0);
+ assert([result[@"stage"]isEqual:@"finished"]&&![result[@"stopReason"]length]);
+ assert([result[@"storageDeferred"]intValue]==1&&[result[@"failed"]intValue]==1&&[result[@"lastStorageFailure"][@"freeBytes"]intValue]==123);
+ LargeOriginal=NO;result=Run(@[@"large"]);assert([result[@"queued"]intValue]==1);
+ NSLog(@"PASS oversized original is deferred while later photos continue and remains retryable");
  NSLog(@"PASS 2000 identifier-only selections, missing IDs, individual export failure, account switch, cancellation, queue/IPC failure, retry and private batch diagnostics");
 }}

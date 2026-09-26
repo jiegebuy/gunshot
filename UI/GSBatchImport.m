@@ -68,7 +68,13 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
     if(!reason)reason=GSCheckBatchAccount(batch);
     if(!reason&&job){processed++;queued++;}
     else if(!reason){
-     if([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError)reason=@"local_storage";
+     if([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError){
+      // The exporter has removed this asset's partial files. A large original
+      // must not prevent smaller remaining photos from being processed.
+      processed++;failed++;failures[@"storage_deferred"]=@([failures[@"storage_deferred"]unsignedIntegerValue]+1);
+      state[@"storageDeferred"]=failures[@"storage_deferred"];
+      state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};
+     }
      else if([error.domain isEqual:@"Gunshot.IPC"])reason=@"queue_rejected";
      else {processed++;failed++;failures[@"export_failed"]=@([failures[@"export_failed"]unsignedIntegerValue]+1);}
     }

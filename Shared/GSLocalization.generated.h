@@ -4,6 +4,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
  static NSDictionary *catalogs; static dispatch_once_t once;
  dispatch_once(&once, ^{ catalogs = @{
   @"en": @{
+   @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
    @"\nTap to retry": @"\nTap to retry",
    @"Account": @"Account",
    @"Account configured": @"Account configured",
@@ -144,6 +145,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
    @"uploads": @"uploads",
   },
   @"ja": @{
+   @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n空き容量不足のため %lu 件のオリジナルをスキップしました。空き容量を確保してアルバムを再選択すると再試行できます。キュー内の項目は重複しません。",
    @"\nTap to retry": @"\nタップして再試行できます",
    @"Account": @"アカウント",
    @"Account configured": @"アカウント設定済み",
@@ -284,6 +286,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
    @"uploads": @"件",
   },
   @"vi": @{
+   @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
    @"\nTap to retry": @"\nNhấn để thử lại",
    @"Account": @"Tài khoản",
    @"Account configured": @"Tài khoản đã được định cấu hình",
@@ -424,6 +427,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
    @"uploads": @"mục tải lên",
   },
   @"zh-hans": @{
+   @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n有 %lu 项原文件因空间不足暂未处理。释放空间后重新选择相册即可重试，已入队项目会自动去重。",
    @"\nTap to retry": @"\n点击以重试",
    @"Account": @"账户",
    @"Account configured": @"账户已配置",

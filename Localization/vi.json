@@ -136,5 +136,6 @@
   "No accessible photos in this album. Check photo permissions.": "Không có ảnh nào có thể truy cập trong album này. Kiểm tra quyền đối với ảnh.",
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Đang chờ tải lên giải phóng dung lượng. Quá trình chuẩn bị sẽ tự tiếp tục. Hãy giữ ứng dụng mở.",
   "Preparation is waiting. Turn off Pause uploads to continue.": "Đang chờ chuẩn bị. Tắt Tạm dừng tải lên để tiếp tục.",
-  "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng."
+  "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng.",
+  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng."
 }

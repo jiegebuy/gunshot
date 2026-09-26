@@ -28,6 +28,8 @@ jobs:
           NSZombieEnabled=YES .build/exporter-batch-test
           clang -O2 -DGS_TEST_STORAGE=1 -DGS_JAILED=1 -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m UI/GSExporter.m tests/exporter_batch.m -o .build/exporter-binary-test
           NSZombieEnabled=YES .build/exporter-binary-test
+          clang -O2 -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m tests/batch_import.m -o .build/batch-import-test
+          .build/batch-import-test
   core:
     runs-on: ubuntu-latest
     steps:
