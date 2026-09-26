@@ -11,10 +11,12 @@ static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return NO;}
   NSDictionary *capacity=GSRequest(@{@"op":@"import_capacity"},&failure);if(!capacity)return NO;
   unsigned long long free=GSStorageFreeBytes(directory),retained=[capacity[@"retainedBytes"]unsignedLongLongValue];
+  unsigned long long buffered=[(capacity[@"bufferedBytes"]?:capacity[@"retainedBytes"])unsignedLongLongValue];
+  NSUInteger bufferedJobs=[(capacity[@"bufferedJobs"]?:capacity[@"retainedJobs"])unsignedIntegerValue];
   BOOL space=free<GSStorageReserve||needed>free-GSStorageReserve;
-  BOOL queue=limitQueue&&GSStorageQueueFull(retained,[capacity[@"retainedJobs"]unsignedIntegerValue],incoming);
+  BOOL queue=limitQueue&&GSStorageQueueFull(buffered,bufferedJobs,incoming);
   // Allow one oversized asset when only small, unresolved failures remain.
-  if(incoming>GSStorageQueueLimit&&retained<GSStorageQueueLimit&&![capacity[@"releasableBytes"]unsignedLongLongValue])queue=NO;
+  if(incoming>GSStorageQueueLimit&&buffered<GSStorageQueueLimit&&![capacity[@"releasableBytes"]unsignedLongLongValue])queue=NO;
   BOOL paused=[capacity[@"paused"]boolValue];
   if(!space&&!queue&&!paused){if(waited&&progress)progress(@{@"stage":@"exporting"});return YES;}
   // With no room even to begin, wait instead of marking thousands of assets
@@ -24,7 +26,7 @@ static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned
    failure=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available."),@"storage":@{@"freeBytes":@(free),@"requiredAdditionalBytes":@(needed),@"reserveBytes":@(GSStorageReserve),@"retainedBytes":@(retained)}}];return NO;
   }
   waited=YES;
-  if(progress)progress(@{@"stage":paused?@"waiting_upload_resume":@"waiting_storage",@"freeBytes":@(free),@"bufferedBytes":@(retained),@"reserveBytes":@(GSStorageReserve),@"bufferLimitBytes":@(GSStorageQueueLimit)});
+  if(progress)progress(@{@"stage":paused?@"waiting_upload_resume":@"waiting_storage",@"freeBytes":@(free),@"bufferedBytes":@(buffered),@"retainedBytes":@(retained),@"reserveBytes":@(GSStorageReserve),@"bufferLimitBytes":@(GSStorageQueueLimit)});
 #if GS_TEST_STORAGE
   [NSThread sleepForTimeInterval:0.001];
 #else

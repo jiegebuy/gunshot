@@ -8,7 +8,8 @@ import (
 // Caller holds e.mu. Count retained originals across accounts: they all share
 // the same device disk. Terminal files are deleted after durable confirmation.
 func (e *Engine) importCapacity() map[string]any {
-	var retained, releasable int64
+	var retained, releasable, buffered int64
+	bufferedJobs := 0
 	jobs := 0
 	for _, j := range e.state.Jobs {
 		switch j.State {
@@ -38,10 +39,14 @@ func (e *Engine) importCapacity() map[string]any {
 		}
 		retained += size
 		jobs++
+		if j.State != "failed" {
+			buffered += size
+			bufferedJobs++
+		}
 		switch j.State {
 		case "pending", "preparing", "uploading", "committing":
 			releasable += j.Total
 		}
 	}
-	return map[string]any{"retainedBytes": retained, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused}
+	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused}
 }

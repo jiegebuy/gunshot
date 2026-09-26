@@ -15,6 +15,9 @@ func TestImportCapacityTracksRetainedFiles(t *testing.T) {
 	if s["retainedBytes"] != int64(600) || s["releasableBytes"] != int64(400) || s["retainedJobs"] != 6 {
 		t.Fatal(s)
 	}
+	if s["bufferedBytes"] != int64(500) || s["bufferedJobs"] != 5 {
+		t.Fatal("failed files block active queue", s)
+	}
 	e.state.Options.Paused = true
 	if !e.importCapacity()["paused"].(bool) {
 		t.Fatal("pause not reported")
