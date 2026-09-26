@@ -1,0 +1,415 @@
+package backend
+
+import (
+	"app/generated"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"google.golang.org/protobuf/proto"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const gunshotResumeThreshold int64 = 32 << 20
+const gunshotResumeChunk int64 = 4 << 20
+const gunshotUploadEndpoint = "https://photos.googleapis.com/data/upload/uploadmedia/interactive"
+
+// Session URLs are bearer capabilities. Keep this sidecar private beside the
+// original; never include it in queue JSON, diagnostic exports or error text.
+type gunshotUploadSession struct {
+	Version     int    `json:"version"`
+	Protocol    string `json:"protocol"`
+	URL         string `json:"url"`
+	Account     string `json:"account"`
+	SHA1        string `json:"sha1"`
+	Size        int64  `json:"size"`
+	Offset      int64  `json:"offset"`
+	Granularity int64  `json:"granularity"`
+	Finalize    []byte `json:"finalize,omitempty"`
+	Updated     int64  `json:"updated"`
+}
+
+func gunshotSessionPath(path string) string {
+	sum := sha256.Sum256([]byte(filepath.Base(path)))
+	return filepath.Join(filepath.Dir(path), ".upload-"+hex.EncodeToString(sum[:8])+".json")
+}
+func (a *Api) gunshotAccountKey() string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%t|%t", a.authData, a.saver, a.useQuota)))
+	return hex.EncodeToString(sum[:])
+}
+func gunshotSafeUploadURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.User == nil && u.Fragment == "" && u.Port() == "" && u.Hostname() == "photos.googleapis.com" && strings.HasPrefix(u.Path, "/data/upload/")
+}
+func gunshotSaveSession(path string, s *gunshotUploadSession) error {
+	s.Updated = time.Now().Unix()
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	target := gunshotSessionPath(path)
+	f, err := os.CreateTemp(filepath.Dir(target), ".upload-write-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), target); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadSession, error) {
+	raw, err := os.ReadFile(gunshotSessionPath(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var s gunshotUploadSession
+	if len(raw) > 1<<20 || json.Unmarshal(raw, &s) != nil || s.Version != 1 || s.Size != size || s.Account != a.gunshotAccountKey() || (hash != "" && s.SHA1 != hash) || s.Offset < 0 || s.Offset > s.Size || !gunshotSafeUploadURL(s.URL) || (s.Protocol != "scotty" && s.Protocol != "range") {
+		return nil, errors.New("invalid private upload checkpoint")
+	}
+	if len(s.Finalize) > 0 {
+		if _, err = ParseScottyFinalizeToken(s.Finalize); err != nil {
+			return nil, errors.New("invalid saved finalize response")
+		}
+	}
+	return &s, nil
+}
+
+// Negotiate resumption before sending file bytes. Existing small-file uploads
+// retain their established path; large files require explicit server support.
+func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash string, size int64) (string, error) {
+	if size < gunshotResumeThreshold {
+		return a.GetUploadToken(hash, size)
+	}
+	saved, err := a.gunshotLoadSession(path, hash, size)
+	if err != nil {
+		return "", err
+	}
+	if saved != nil {
+		return saved.URL, nil
+	}
+	body, err := proto.Marshal(&generated.GetUploadToken{F1: 2, F2: 2, F3: 1, F4: 3, FileSizeBytes: size})
+	if err != nil {
+		return "", err
+	}
+	c, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(c, "POST", gunshotUploadEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	bearer, err := a.BearerToken()
+	if err != nil {
+		return "", errors.New("upload session authorization unavailable")
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("User-Agent", a.userAgent)
+	req.Header.Set("Accept-Language", a.language)
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("X-Goog-Hash", "sha1="+hash)
+	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	req.Header.Set("X-Goog-Upload-Protocol", "resumable")
+	req.Header.Set("X-Goog-Upload-Command", "start")
+	req.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(size, 10))
+	req.Header.Set("X-Goog-Upload-Header-Content-Type", "application/octet-stream")
+	client := *a.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", errors.New("upload session request interrupted")
+	}
+	defer resp.Body.Close()
+	// Only status/header metadata is persisted in diagnostics; no session ID.
+	gunshotRecordResumeProbe(path, resp.StatusCode, resp.Header)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("upload session negotiation returned HTTP %d", resp.StatusCode)
+	}
+	s := &gunshotUploadSession{Version: 1, Account: a.gunshotAccountKey(), SHA1: hash, Size: size, Granularity: 256 << 10}
+	if raw := resp.Header.Get("X-Goog-Upload-URL"); raw != "" {
+		s.Protocol = "scotty"
+		s.URL = raw
+		if g, e := strconv.ParseInt(resp.Header.Get("X-Goog-Upload-Chunk-Granularity"), 10, 64); e == nil {
+			s.Granularity = g
+		}
+	} else if raw := resp.Header.Get("Location"); raw != "" {
+		s.Protocol = "range"
+		s.URL = raw
+	} else {
+		// Legacy Scotty may expose only its session ID. Probe that exact session
+		// with an empty range query; never assume it supports offsets.
+		token := resp.Header.Get("X-GUploader-UploadID")
+		if token == "" {
+			return "", errors.New("server did not offer a resumable upload session")
+		}
+		s.Protocol = "range"
+		s.URL = gunshotUploadEndpoint + "?upload_id=" + url.QueryEscape(token)
+	}
+	if !gunshotSafeUploadURL(s.URL) || s.Granularity <= 0 || s.Granularity > 64<<20 {
+		return "", errors.New("unsupported resumable session parameters")
+	}
+	if _, _, err = a.gunshotResumeRequest(ctx, path, s, 0, 0, nil); err != nil {
+		return "", err
+	}
+	if err = gunshotSaveSession(path, s); err != nil {
+		return "", err
+	}
+	return s.URL, nil
+}
+func gunshotRecordResumeProbe(path string, status int, h http.Header) {
+	data, _ := json.Marshal(map[string]any{"status": status, "hasScottyURL": h.Get("X-Goog-Upload-URL") != "", "hasLocation": h.Get("Location") != "", "hasLegacyID": h.Get("X-GUploader-UploadID") != "", "uploadStatus": h.Get("X-Goog-Upload-Status"), "granularity": h.Get("X-Goog-Upload-Chunk-Granularity")})
+	_ = os.WriteFile(filepath.Join(filepath.Dir(path), ".upload-protocol-diagnostic.json"), data, 0600)
+}
+
+// A query never creates a media item. Only server-acknowledged offsets advance
+// the checkpoint; bytes read from a socket writer are not an acknowledgement.
+func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotUploadSession, offset, n int64, reader io.Reader) (int64, []byte, error) {
+	query := reader == nil
+	method := "POST"
+	if s.Protocol == "range" {
+		method = "PUT"
+	}
+	c, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(c, method, s.URL, reader)
+	if err != nil {
+		return 0, nil, errors.New("invalid upload request")
+	}
+	req.ContentLength = n
+	token, err := a.BearerToken()
+	if err != nil {
+		return 0, nil, errors.New("upload authorization unavailable")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", a.userAgent)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if s.Protocol == "scotty" {
+		command := "upload"
+		if offset+n == s.Size {
+			command = "upload, finalize"
+		}
+		if query {
+			command = "query"
+		}
+		req.Header.Set("X-Goog-Upload-Command", command)
+		if !query {
+			req.Header.Set("X-Goog-Upload-Offset", strconv.FormatInt(offset, 10))
+		}
+	} else {
+		value := fmt.Sprintf("bytes %d-%d/%d", offset, offset+n-1, s.Size)
+		if query {
+			value = fmt.Sprintf("bytes */%d", s.Size)
+		}
+		req.Header.Set("Content-Range", value)
+	}
+	client := *a.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, errors.New("resumable transfer interrupted")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		return 0, nil, errors.New("upload session expired; manual restart required")
+	}
+	if resp.StatusCode != 308 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return 0, nil, fmt.Errorf("resumable transfer returned HTTP %d", resp.StatusCode)
+	}
+	if location := resp.Header.Get("Location"); location != "" {
+		if !gunshotSafeUploadURL(location) {
+			return 0, nil, errors.New("invalid session redirect")
+		}
+		s.URL = location
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, errors.New("upload response interrupted")
+	}
+	if len(raw) > 0 {
+		if final, e := ParseScottyFinalizeToken(raw); e == nil {
+			return s.Size, final.Raw, nil
+		}
+	}
+	accepted := int64(-1)
+	if s.Protocol == "scotty" {
+		if resp.Header.Get("X-Goog-Upload-Status") != "active" {
+			return 0, nil, errors.New("upload finalized without recoverable receipt")
+		}
+		if value := resp.Header.Get("X-Goog-Upload-Size-Received"); value != "" {
+			accepted, err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return 0, nil, errors.New("invalid server offset")
+			}
+		} else if query {
+			return 0, nil, errors.New("server omitted resumable offset")
+		}
+	} else {
+		if resp.StatusCode != 308 {
+			return 0, nil, errors.New("server does not support range resumption")
+		}
+		value := resp.Header.Get("Range")
+		if value == "" {
+			accepted = 0
+		} else if strings.HasPrefix(value, "bytes=0-") {
+			end, e := strconv.ParseInt(strings.TrimPrefix(value, "bytes=0-"), 10, 64)
+			if e != nil || end < 0 || end >= s.Size {
+				return 0, nil, errors.New("invalid acknowledged range")
+			}
+			accepted = end + 1
+		} else {
+			return 0, nil, errors.New("invalid acknowledged range")
+		}
+	}
+	if accepted > s.Size || accepted < -1 {
+		return 0, nil, errors.New("invalid server offset")
+	}
+	return accepted, nil, nil
+}
+
+func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken string, onProgress UploadProgressCallback) (ScottyFinalizeToken, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ScottyFinalizeToken{}, err
+	}
+	if st.Size() < gunshotResumeThreshold {
+		return a.gunshotUploadFileLegacy(ctx, path, uploadToken, onProgress)
+	}
+	s, err := a.gunshotLoadSession(path, "", st.Size())
+	if err != nil {
+		return ScottyFinalizeToken{}, err
+	}
+	if s == nil {
+		hash, e := CalculateSHA1(ctx, path)
+		if e != nil {
+			return ScottyFinalizeToken{}, e
+		}
+		if _, e = a.gunshotGetUploadTokenForFile(ctx, path, base64.StdEncoding.EncodeToString(hash), st.Size()); e != nil {
+			return ScottyFinalizeToken{}, e
+		}
+		s, err = a.gunshotLoadSession(path, "", st.Size())
+		if err != nil || s == nil {
+			return ScottyFinalizeToken{}, errors.New("large upload has no resumable checkpoint")
+		}
+	}
+	if len(s.Finalize) > 0 {
+		return ParseScottyFinalizeToken(s.Finalize)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ScottyFinalizeToken{}, err
+	}
+	defer f.Close()
+	needQuery := true
+	failures := 0
+	attempt := 1
+	for {
+		if err = ctx.Err(); err != nil {
+			return ScottyFinalizeToken{}, err
+		}
+		var accepted int64
+		var final []byte
+		if needQuery {
+			accepted, final, err = a.gunshotResumeRequest(ctx, path, s, 0, 0, nil)
+		} else {
+			if s.Offset >= s.Size {
+				return ScottyFinalizeToken{}, errors.New("awaiting upload receipt; no bytes retransmitted")
+			}
+			chunk := max(gunshotResumeChunk, s.Granularity)
+			chunk = (chunk / s.Granularity) * s.Granularity
+			n := min(chunk, s.Size-s.Offset)
+			start := s.Offset
+			reader := NewProgressReader(io.NewSectionReader(f, start, n), n, func(sent, total int64) {
+				if onProgress != nil {
+					onProgress(start+sent, s.Size, attempt)
+				}
+			})
+			accepted, final, err = a.gunshotResumeRequest(ctx, path, s, start, n, reader)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ScottyFinalizeToken{}, ctx.Err()
+			}
+			failures++
+			attempt++
+			if failures > 3 {
+				return ScottyFinalizeToken{}, err
+			}
+			needQuery = true
+			select {
+			case <-ctx.Done():
+				return ScottyFinalizeToken{}, ctx.Err()
+			case <-time.After(time.Duration(failures) * time.Second):
+			}
+			continue
+		}
+		if len(final) > 0 {
+			s.Offset = s.Size
+			s.Finalize = final
+			if err = gunshotSaveSession(path, s); err != nil {
+				return ScottyFinalizeToken{}, err
+			}
+			if onProgress != nil {
+				onProgress(s.Size, s.Size, attempt)
+			}
+			return ParseScottyFinalizeToken(final)
+		}
+		if accepted >= 0 {
+			if !needQuery && accepted <= s.Offset {
+				failures++
+				if failures > 3 {
+					return ScottyFinalizeToken{}, errors.New("server offset did not advance")
+				}
+			} else if accepted > s.Offset {
+				failures = 0
+			}
+			s.Offset = accepted
+			if err = gunshotSaveSession(path, s); err != nil {
+				return ScottyFinalizeToken{}, err
+			}
+			if onProgress != nil {
+				onProgress(s.Offset, s.Size, attempt)
+			}
+			needQuery = false
+		} else {
+			failures++
+			if failures > 3 {
+				return ScottyFinalizeToken{}, errors.New("server did not acknowledge chunk progress")
+			}
+			needQuery = true
+		}
+	}
+}

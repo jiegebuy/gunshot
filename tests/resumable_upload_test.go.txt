@@ -1,0 +1,218 @@
+package backend
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+type resumeServer struct {
+	t                       *testing.T
+	received, size          int64
+	starts, queries, chunks int
+	interrupt               bool
+	cancel                  context.CancelFunc
+	badOffset               bool
+	dropFinal               bool
+}
+
+func (s *resumeServer) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.t.Helper()
+	h := http.Header{}
+	body := ""
+	status := 200
+	command := r.Header.Get("X-Goog-Upload-Command")
+	if command == "start" {
+		s.starts++
+		h.Set("X-Goog-Upload-URL", gunshotUploadEndpoint+"?upload_id=private-session")
+		h.Set("X-Goog-Upload-Chunk-Granularity", "262144")
+	} else if command == "query" {
+		s.queries++
+		h.Set("X-Goog-Upload-Status", "active")
+		offset := s.received
+		if s.badOffset {
+			offset = s.size + 1
+		}
+		h.Set("X-Goog-Upload-Size-Received", strconv.FormatInt(offset, 10))
+		if s.received == s.size {
+			h.Set("X-Goog-Upload-Status", "final")
+			body = string([]byte{8, 2, 18, 3, 1, 2, 3})
+		}
+	} else if command == "upload" || command == "upload, finalize" {
+		s.chunks++
+		offset, _ := strconv.ParseInt(r.Header.Get("X-Goog-Upload-Offset"), 10, 64)
+		if offset != s.received {
+			s.t.Fatalf("resent or skipped acknowledged bytes: %d != %d", offset, s.received)
+		}
+		if s.interrupt && s.chunks == 2 {
+			n, err := io.CopyN(io.Discard, r.Body, 2<<20)
+			if err != nil {
+				s.t.Fatal(err)
+			}
+			s.received += n
+			return nil, io.ErrUnexpectedEOF
+		}
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		if n != r.ContentLength {
+			s.t.Fatal("wrong chunk length")
+		}
+		s.received += n
+		h.Set("X-Goog-Upload-Status", "active")
+		h.Set("X-Goog-Upload-Size-Received", strconv.FormatInt(s.received, 10))
+		if s.cancel != nil && s.chunks == 1 {
+			s.cancel()
+		}
+		if command == "upload, finalize" {
+			if s.received != s.size {
+				s.t.Fatal("early finalize")
+			}
+			if s.dropFinal {
+				return nil, io.ErrUnexpectedEOF
+			}
+			h.Set("X-Goog-Upload-Status", "final")
+			body = string([]byte{8, 2, 18, 3, 1, 2, 3})
+		}
+	} else {
+		s.t.Fatalf("unexpected command %q", command)
+	}
+	return &http.Response{StatusCode: status, Header: h, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+func TestResumableRecoversLostFinalizeResponseWithoutSendingBytesAgain(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	server.dropFinal = true
+	token, err := api.gunshotGetUploadTokenForFile(context.Background(), path, "hash", server.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := api.UploadFileWithProgress(context.Background(), path, token, nil)
+	if err != nil || len(final.Raw) == 0 {
+		t.Fatal("lost finalize not recovered", err)
+	}
+	if server.chunks != int((server.size+gunshotResumeChunk-1)/gunshotResumeChunk) {
+		t.Fatal("retransmitted final block")
+	}
+	diagnostic, err := os.ReadFile(filepath.Join(filepath.Dir(path), ".upload-protocol-diagnostic.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(diagnostic, []byte("private-session")) {
+		t.Fatal("session token leaked to diagnostic")
+	}
+}
+func TestResumableUnsupportedServerDoesNotReceiveFileBytes(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	calls := 0
+	api.client.Transport = gunshotRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		h := http.Header{}
+		if calls == 1 {
+			h.Set("X-GUploader-UploadID", "old-session")
+		} else if r.ContentLength != 0 {
+			t.Fatal("sent bytes without negotiating resumption")
+		}
+		return &http.Response{StatusCode: 200, Header: h, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})
+	if _, err := api.gunshotGetUploadTokenForFile(context.Background(), path, "hash", server.size); err == nil {
+		t.Fatal("assumed server supports continuation")
+	}
+	if calls != 2 {
+		t.Fatal(calls)
+	}
+}
+func resumeFixture(t *testing.T) (*Api, *resumeServer, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "video.mp4")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := int64(34<<20) + 17
+	if err = f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	server := &resumeServer{t: t, size: size}
+	api := &Api{client: &http.Client{Transport: server}, authResponseCache: map[string]string{"Auth": "synthetic", "Expiry": strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}}
+	return api, server, path
+}
+func TestResumableUploadRecoversServerOffsetAfterBrokenConnection(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	server.interrupt = true
+	token, err := api.gunshotGetUploadTokenForFile(context.Background(), path, "synthetic-hash", server.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := api.UploadFileWithProgress(context.Background(), path, token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.Raw) == 0 || server.received != server.size || server.starts != 1 || server.queries < 3 {
+		t.Fatal("resume did not finish", server)
+	}
+	checkpoint, err := api.gunshotLoadSession(path, "synthetic-hash", server.size)
+	if err != nil || checkpoint.Offset != server.size || len(checkpoint.Finalize) == 0 {
+		t.Fatal("checkpoint not durable", err)
+	}
+	before := server.chunks
+	if _, err = api.UploadFileWithProgress(context.Background(), path, token, nil); err != nil {
+		t.Fatal(err)
+	}
+	if server.chunks != before {
+		t.Fatal("final bytes retransmitted")
+	}
+	st, _ := os.Stat(gunshotSessionPath(path))
+	if st.Mode().Perm() != 0600 {
+		t.Fatal("session permissions")
+	}
+}
+func TestResumableUploadSurvivesNewClientAfterCancellation(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	server.cancel = cancel
+	token, err := api.gunshotGetUploadTokenForFile(ctx, path, "hash", server.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = api.UploadFileWithProgress(ctx, path, token, nil); !errors.Is(err, context.Canceled) {
+		t.Fatal("did not stop", err)
+	}
+	if server.received != gunshotResumeChunk {
+		t.Fatal("unexpected cancelled offset")
+	}
+	server.cancel = nil
+	second := *api
+	token, err = second.gunshotGetUploadTokenForFile(context.Background(), path, "hash", server.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = second.UploadFileWithProgress(context.Background(), path, token, nil); err != nil {
+		t.Fatal(err)
+	}
+	if server.starts != 1 || server.received != server.size {
+		t.Fatal("created new session or lost progress")
+	}
+}
+func TestResumableRejectsForeignSessionAndImpossibleOffset(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	server.badOffset = true
+	if _, err := api.gunshotGetUploadTokenForFile(context.Background(), path, "hash", server.size); err == nil {
+		t.Fatal("accepted offset outside file")
+	}
+	if gunshotSafeUploadURL("https://attacker.invalid/data/upload/?upload_id=x") || gunshotSafeUploadURL("http://photos.googleapis.com/data/upload/x") || gunshotSafeUploadURL("https://user@photos.googleapis.com/data/upload/x") {
+		t.Fatal("unsafe URL accepted")
+	}
+	if bytes.Contains([]byte(gunshotSessionPath(path)), []byte("private-session")) {
+		t.Fatal("token in filename")
+	}
+}

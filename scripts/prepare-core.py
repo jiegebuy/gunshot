@@ -65,3 +65,18 @@ p.write_text(s)
 shutil.copy2(r / 'tests/quality_wire_test.go.txt', d / 'backend/gunshot_quality_wire_test.go')
 
 shutil.copy2(r / 'tests/context_transport_test.go.txt', d / 'backend/gunshot_context_transport_test.go')
+
+shutil.copy2(r / 'GotohpCore/resumable_upload.go.txt', d / 'backend/gunshot_resumable_upload.go')
+shutil.copy2(r / 'tests/resumable_upload_test.go.txt', d / 'backend/gunshot_resumable_upload_test.go')
+p = d / 'backend/api.go'
+s = p.read_text()
+needle = 'func (a *Api) UploadFileWithProgress('
+assert s.count(needle) == 1
+s = s.replace(needle, 'func (a *Api) gunshotUploadFileLegacy(')
+p.write_text(s)
+p = d / 'backend/upload.go'
+s = p.read_text()
+needle = 'api.GetUploadToken(sha1_hash_b64, fileSize)'
+assert s.count(needle) == 1
+s = s.replace(needle, 'api.gunshotGetUploadTokenForFile(ctx, filePath, sha1_hash_b64, fileSize)')
+p.write_text(s)
