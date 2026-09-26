@@ -10,6 +10,14 @@ import (
 
 var ErrGunshotRemoteComponentExists = errors.New("remote Live Photo component already exists")
 
+// Read-only reconciliation: never uploads bytes or submits another commit.
+func GunshotFindUploadedHash(ctx context.Context,account string,digest []byte)(string,error){
+ if len(digest)!=20{return "",errors.New("invalid content hash")}
+ api,err:=NewApi(ApiOptions{Account:account});if err!=nil{return "",err}
+ api.client.Transport=contextTransport{ctx,api.client.Transport}
+ return api.FindRemoteMediaByHash(digest)
+}
+
 func gunshotCommitWait(a *Api, delay time.Duration) error {
  ctx:=context.Background()
  if transport,ok:=a.client.Transport.(contextTransport);ok{ctx=transport.ctx}

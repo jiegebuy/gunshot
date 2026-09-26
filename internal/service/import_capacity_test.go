@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestImportCapacityTracksRetainedFiles(t *testing.T) {
 	e := newEngine(t, nil)
@@ -18,5 +22,26 @@ func TestImportCapacityTracksRetainedFiles(t *testing.T) {
 	e.state.Jobs[0].State = "completed"
 	if e.importCapacity()["retainedBytes"] != int64(500) {
 		t.Fatal("completed bytes not released")
+	}
+}
+func TestCapacityReclaimsTerminalFilesAndExcludesArchivedFailures(t *testing.T) {
+	e := newEngine(t, nil)
+	j := importTest(t, e, "original")
+	j.State = "completed"
+	if e.importCapacity()["retainedBytes"] != int64(0) {
+		t.Fatal("completed still counted")
+	}
+	if _, err := os.Stat(e.jobDir(j.ID)); !os.IsNotExist(err) {
+		t.Fatal("terminal cache not removed")
+	}
+	j.State = "failed"
+	j.Error = "commit_outcome_unknown"
+	if e.importCapacity()["retainedBytes"] != int64(0) {
+		t.Fatal("archived original still counted")
+	}
+	os.MkdirAll(e.jobDir(j.ID), 0700)
+	os.WriteFile(filepath.Join(e.jobDir(j.ID), j.Resources[0].Name), []byte("abc"), 0600)
+	if e.importCapacity()["retainedBytes"] != int64(3) {
+		t.Fatal("unresolved file not retained")
 	}
 }

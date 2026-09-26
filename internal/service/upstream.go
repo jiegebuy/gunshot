@@ -14,6 +14,7 @@ func Initialize(root string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.reconciler = backend.GunshotFindUploadedHash
 	if err = backend.LoadConfig(filepath.Join(root, "credentials.json")); err != nil {
 		return nil, err
 	}
@@ -35,16 +36,24 @@ func (e *Engine) accounts(r Request) (any, error) {
 		return map[string]any{"accounts": a.Accounts, "selected": a.Selected, "nativeAuthorization": e.nativeAuthorization(a.Selected)}, nil
 	case "account_native":
 		if e.nativeRelay != nil {
-			if err := e.nativeRelay.put(r.NativeID, r.Secret); err != nil { return nil, err }
+			if err := e.nativeRelay.put(r.NativeID, r.Secret); err != nil {
+				return nil, err
+			}
 		}
 		err := g.AddNativeAccount(r.Account, r.NativeID)
-		if err != nil && e.nativeRelay != nil { e.nativeRelay.clear() }
+		if err != nil && e.nativeRelay != nil {
+			e.nativeRelay.clear()
+		}
 		return nil, err
 	case "native_bearer":
-		if e.nativeRelay == nil || backend.GunshotNativeAccountID(r.Account) != r.NativeID || r.NativeID == "" { return nil, errRequest }
+		if e.nativeRelay == nil || backend.GunshotNativeAccountID(r.Account) != r.NativeID || r.NativeID == "" {
+			return nil, errRequest
+		}
 		return nil, e.nativeRelay.put(r.NativeID, r.Secret)
 	case "native_bearer_clear":
-		if e.nativeRelay == nil { return nil, errRequest }
+		if e.nativeRelay == nil {
+			return nil, errRequest
+		}
 		e.nativeRelay.clear()
 		return nil, nil
 	case "account_add":
@@ -67,7 +76,9 @@ func (e *Engine) accounts(r Request) (any, error) {
 			}
 		}
 		err := g.RemoveCredentials(r.Account)
-		if err == nil && e.nativeRelay != nil { e.nativeRelay.clear() }
+		if err == nil && e.nativeRelay != nil {
+			e.nativeRelay.clear()
+		}
 		return nil, err
 	}
 	return nil, errRequest
@@ -75,8 +86,8 @@ func (e *Engine) accounts(r Request) (any, error) {
 
 type reporter struct {
 	backend.NopReporter
-	callback     func(Progress)
-	uploaded     int64
+	callback func(Progress)
+	uploaded int64
 }
 
 func (r *reporter) ThreadStatus(s backend.ThreadStatus) {

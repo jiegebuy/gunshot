@@ -13,9 +13,14 @@ static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned
   unsigned long long free=GSStorageFreeBytes(directory),retained=[capacity[@"retainedBytes"]unsignedLongLongValue];
   BOOL space=free<GSStorageReserve||needed>free-GSStorageReserve;
   BOOL queue=limitQueue&&GSStorageQueueFull(retained,[capacity[@"retainedJobs"]unsignedIntegerValue],incoming);
+  // Allow one oversized asset when only small, unresolved failures remain.
+  if(incoming>GSStorageQueueLimit&&retained<GSStorageQueueLimit&&![capacity[@"releasableBytes"]unsignedLongLongValue])queue=NO;
   BOOL paused=[capacity[@"paused"]boolValue];
   if(!space&&!queue&&!paused){if(waited&&progress)progress(@{@"stage":@"exporting"});return YES;}
-  if((space||queue)&&![capacity[@"releasableBytes"]unsignedLongLongValue]){
+  // With no room even to begin, wait instead of marking thousands of assets
+  // failed in a tight loop. A partially exported oversized asset may be deferred.
+  BOOL beforeExport=limitQueue&&incoming==0;
+  if((space||queue)&&!beforeExport&&![capacity[@"releasableBytes"]unsignedLongLongValue]){
    failure=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available."),@"storage":@{@"freeBytes":@(free),@"requiredAdditionalBytes":@(needed),@"reserveBytes":@(GSStorageReserve),@"retainedBytes":@(retained)}}];return NO;
   }
   waited=YES;

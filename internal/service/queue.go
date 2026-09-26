@@ -432,6 +432,17 @@ func (e *Engine) Tick() {
 		if len(e.active) >= e.state.Options.Concurrent {
 			return
 		}
+		if e.reconciler != nil && uncertainCommit(j) && len(j.Resources) == 1 && j.Next <= now {
+			if _, running := e.active[j.ID]; running {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			e.active[j.ID] = cancel
+			j.Next = now + 300
+			e.wg.Add(1)
+			go e.reconcileCommit(ctx, *j, cancel)
+			continue
+		}
 		if j.State != "pending" || j.Next > now {
 			continue
 		}

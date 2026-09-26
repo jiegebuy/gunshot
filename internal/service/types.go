@@ -43,6 +43,7 @@ type Job struct {
 	Quality         string     `json:"quality"`
 	State           string     `json:"state"`
 	CommitStarted   int64      `json:"commitStarted,omitempty"`
+	ContentSHA1     string     `json:"contentSHA1,omitempty"`
 	Resources       []Resource `json:"resources"`
 	Created         int64      `json:"created"`
 	Timestamp       int64      `json:"timestamp"`
@@ -114,6 +115,7 @@ type Engine struct {
 	fingerprintReceiptsByID map[string]FingerprintReceipt
 	active                  map[string]context.CancelFunc
 	runner                  Runner
+	reconciler              func(context.Context, string, []byte) (string, error)
 	online, wifi, charging  bool
 	stopped                 bool
 	wg                      sync.WaitGroup

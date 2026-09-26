@@ -225,8 +225,9 @@ int main(void){@autoreleasepool{
   assert(!GSImportPhotoIdentifierWithProgress(@"cancel-capacity",@"fixture@example.com",@"original",^BOOL{return CapacityWaits>18;},nil,&error));
   assert([error.domain isEqual:@"Gunshot.Authorization"]);CapacityWaits=0;
   LowSpace=YES;NSUInteger before=Written;
-  assert(!GSImportPhotoIdentifier(@"no-disk",@"fixture@example.com",@"original",&error));
-  assert(error.code==NSFileWriteOutOfSpaceError&&Written==before);LowSpace=NO;
+  NSUInteger freeBefore=FreeReads;
+  assert(!GSImportPhotoIdentifierWithProgress(@"no-disk",@"fixture@example.com",@"original",^BOOL{return FreeReads<freeBefore+2;},nil,&error));
+  assert([error.domain isEqual:@"Gunshot.Authorization"]&&Written==before);LowSpace=NO;
   FreeReads=0;LowSpaceDuringExport=YES;before=Queued;
   assert(!GSImportPhotoIdentifier(@"disk-filled-mid-export",@"fixture@example.com",@"original",&error));
   assert(error.code==NSFileWriteOutOfSpaceError&&CloudCancelled>0&&Queued==before);
