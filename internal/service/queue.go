@@ -418,7 +418,7 @@ func (j *Job) resetRetry() {
 func retryableFailure(j *Job) bool {
 	// Only a failure known to have happened before a successful/uncertain commit
 	// is safe to re-run. Component-exists and commit-unknown are duplicate hazards.
-	return j != nil && j.State == "failed" && j.Error == "upload_failed_check_account_and_network"
+	return j != nil && j.State == "failed" && (j.Error == "upload_failed_check_account_and_network" || j.Error == "upload_stalled")
 }
 
 func (e *Engine) Tick() {
@@ -474,6 +474,12 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	defer e.wg.Done()
 	ctx, cancelCommit := context.WithCancel(ctx)
 	defer cancelCommit()
+	watch := &uploadWatch{}
+	idleLimit := e.uploadIdleTimeout
+	if idleLimit <= 0 {
+		idleLimit = 2 * time.Minute
+	}
+	go watch.run(ctx, cancelCommit, idleLimit)
 	var commitTimer *time.Timer
 	var commitTimedOut atomic.Bool
 	defer func() {
@@ -489,6 +495,10 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 			return
 		}
 		old := j.State
+		watch.update(p)
+		if p.State == "uploading" && (old != "uploading" || p.Uploaded != j.Uploaded) {
+			j.ProgressUpdated = time.Now().Unix()
+		}
 		if p.State == "committing" && commitTimer == nil {
 			j.CommitStarted = time.Now().Unix()
 			limit := e.commitTimeout
@@ -539,6 +549,9 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	case j.CancelRequested:
 		j.State = "cancelled"
 		j.Error = ""
+	case watch.didStall():
+		j.State = "failed"
+		j.Error = "upload_stalled"
 	case e.stopped || errors.Is(err, context.Canceled):
 		// Lifecycle / network pauses do not consume the failure retry budget.
 		if j.Attempts > 0 {

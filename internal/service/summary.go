@@ -39,7 +39,7 @@ func diagnosticFailure(code string) string {
 	switch code {
 	case "remote_live_photo_component_exists", "commit_outcome_unknown", "commit_timeout_unknown",
 		"upload_failed_retrying", "upload_failed_check_account_and_network",
-		"waiting_for_native_auth", "paused", "import_interrupted":
+		"waiting_for_native_auth", "paused", "import_interrupted", "upload_stalled":
 		return code
 	case "":
 		return "unspecified"

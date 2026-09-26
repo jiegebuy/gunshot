@@ -139,5 +139,6 @@
   "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng.",
   "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
-  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại."
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
+  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu."
 }

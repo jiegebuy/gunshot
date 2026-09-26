@@ -139,5 +139,6 @@
   "Not enough space to prepare this original while keeping free space available.": "Not enough space to prepare this original while keeping free space available.",
   "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nWaiting for server confirmation: %lld s (limit 5 minutes).",
-  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nServer confirmation is unavailable. Check Google Photos before uploading again."
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nServer confirmation is unavailable. Check Google Photos before uploading again.",
+  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning."
 }

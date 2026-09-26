@@ -139,5 +139,6 @@
   "Not enough space to prepare this original while keeping free space available.": "可用空间不足，无法在保留系统余量的同时准备此原文件。",
   "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n有 %lu 项原文件因空间不足暂未处理。释放空间后重新选择相册即可重试，已入队项目会自动去重。",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\n等待服务器确认：%lld 秒（最长 5 分钟）。",
-  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\n尚未获得服务器确认，请先在 Google Photos 核对，避免重复上传。"
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\n尚未获得服务器确认，请先在 Google Photos 核对，避免重复上传。",
+  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\n上传已连续 2 分钟无进度，文件已保留。重试会从头上传此文件。"
 }

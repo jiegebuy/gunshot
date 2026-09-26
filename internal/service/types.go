@@ -43,6 +43,7 @@ type Job struct {
 	Quality         string     `json:"quality"`
 	State           string     `json:"state"`
 	CommitStarted   int64      `json:"commitStarted,omitempty"`
+	ProgressUpdated int64      `json:"progressUpdated,omitempty"`
 	ContentSHA1     string     `json:"contentSHA1,omitempty"`
 	Resources       []Resource `json:"resources"`
 	Created         int64      `json:"created"`
@@ -121,6 +122,7 @@ type Engine struct {
 	wg                      sync.WaitGroup
 	fault                   bool
 	commitTimeout           time.Duration // zero uses the production five-minute limit
+	uploadIdleTimeout       time.Duration // zero uses two minutes without byte progress
 }
 
 var errRequest = errors.New("invalid request")

@@ -139,5 +139,6 @@
   "Not enough space to prepare this original while keeping free space available.": "空き容量を確保しながらこのオリジナルを準備するための容量が不足しています。",
   "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n空き容量不足のため %lu 件のオリジナルをスキップしました。空き容量を確保してアルバムを再選択すると再試行できます。キュー内の項目は重複しません。",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nサーバー確認待ち：%lld 秒（最大5分）。",
-  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nサーバーの確認が得られていません。再アップロード前に Google Photos を確認してください。"
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nサーバーの確認が得られていません。再アップロード前に Google Photos を確認してください。",
+  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\n2分間アップロードが進んでいません。ファイルは保持されています。再試行すると最初からアップロードします。"
 }

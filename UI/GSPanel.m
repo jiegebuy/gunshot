@@ -278,6 +278,7 @@
  cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ · %@\n%@",states[state?:@""]?:GSL(@"Checking status"),[self qualityTitle:job[@"quality"]],sizes];
  cell.imageView.image=[UIImage systemImageNamed:[state isEqual:@"completed"]?@"checkmark.circle.fill":[state isEqual:@"failed"]?@"exclamationmark.circle":@"icloud.and.arrow.up"];
  BOOL uncertain=[@[@"commit_outcome_unknown",@"commit_timeout_unknown"]containsObject:job[@"error"]?:@""];
+ if([job[@"error"]isEqual:@"upload_stalled"])cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingString:GSL(@"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.")];
  if([state isEqual:@"committing"]){
   long long started=[job[@"commitStarted"]longLongValue];
   if(started>0)cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingFormat:GSL(@"\nWaiting for server confirmation: %lld s (limit 5 minutes)."),MAX(0LL,(long long)NSDate.date.timeIntervalSince1970-started)];
@@ -420,7 +421,7 @@
  }else if(path.section==self.queueSection&&path.row<self.jobs.count){
  NSDictionary *j=self.jobs[path.row];NSString *state=j[@"state"];
  UIAlertController *a=[UIAlertController alertControllerWithTitle:j[@"resources"][0][@"name"] message:j[@"error"] preferredStyle:UIAlertControllerStyleActionSheet];
- if([state isEqual:@"failed"]&&[j[@"error"]isEqual:@"upload_failed_check_account_and_network"])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self request:@{@"op":@"retry",@"id":j[@"id"]}];}]];
+ if([state isEqual:@"failed"]&&[@[@"upload_failed_check_account_and_network",@"upload_stalled"]containsObject:j[@"error"]?:@""])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self request:@{@"op":@"retry",@"id":j[@"id"]}];}]];
  if(![state isEqual:@"completed"]&&![state isEqual:@"cancelled"])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Cancel upload") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){[self request:@{@"op":@"cancel",@"id":j[@"id"]}];}]];
  [a addAction:[UIAlertAction actionWithTitle:GSL(@"Close") style:UIAlertActionStyleCancel handler:nil]];[self sheet:a];
  }
