@@ -5,7 +5,9 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
  dispatch_once(&once, ^{ catalogs = @{
   @"en": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
+   @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nServer confirmation is unavailable. Check Google Photos before uploading again.",
    @"\nTap to retry": @"\nTap to retry",
+   @"\nWaiting for server confirmation: %lld s (limit 5 minutes).": @"\nWaiting for server confirmation: %lld s (limit 5 minutes).",
    @"Account": @"Account",
    @"Account configured": @"Account configured",
    @"Add": @"Add",
@@ -146,7 +148,9 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"ja": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n空き容量不足のため %lu 件のオリジナルをスキップしました。空き容量を確保してアルバムを再選択すると再試行できます。キュー内の項目は重複しません。",
+   @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nサーバーの確認が得られていません。再アップロード前に Google Photos を確認してください。",
    @"\nTap to retry": @"\nタップして再試行できます",
+   @"\nWaiting for server confirmation: %lld s (limit 5 minutes).": @"\nサーバー確認待ち：%lld 秒（最大5分）。",
    @"Account": @"アカウント",
    @"Account configured": @"アカウント設定済み",
    @"Add": @"追加",
@@ -287,7 +291,9 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"vi": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
+   @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
    @"\nTap to retry": @"\nNhấn để thử lại",
+   @"\nWaiting for server confirmation: %lld s (limit 5 minutes).": @"\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
    @"Account": @"Tài khoản",
    @"Account configured": @"Tài khoản đã được định cấu hình",
    @"Add": @"Thêm",
@@ -428,7 +434,9 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"zh-hans": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n有 %lu 项原文件因空间不足暂未处理。释放空间后重新选择相册即可重试，已入队项目会自动去重。",
+   @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\n尚未获得服务器确认，请先在 Google Photos 核对，避免重复上传。",
    @"\nTap to retry": @"\n点击以重试",
+   @"\nWaiting for server confirmation: %lld s (limit 5 minutes).": @"\n等待服务器确认：%lld 秒（最长 5 分钟）。",
    @"Account": @"账户",
    @"Account configured": @"账户已配置",
    @"Add": @"添加",

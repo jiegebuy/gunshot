@@ -5,9 +5,19 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 )
 
 var ErrGunshotRemoteComponentExists = errors.New("remote Live Photo component already exists")
+
+func gunshotCommitWait(a *Api, delay time.Duration) error {
+ ctx:=context.Background()
+ if transport,ok:=a.client.Transport.(contextTransport);ok{ctx=transport.ctx}
+ if err:=ctx.Err();err!=nil{return err}
+ if delay<=0{return nil}
+ timer:=time.NewTimer(delay);defer timer.Stop()
+ select{case <-ctx.Done():return ctx.Err();case <-timer.C:return nil}
+}
 
 type contextTransport struct {
 	ctx  context.Context

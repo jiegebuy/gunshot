@@ -137,5 +137,7 @@
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.",
   "Preparation is waiting. Turn off Pause uploads to continue.": "Preparation is waiting. Turn off Pause uploads to continue.",
   "Not enough space to prepare this original while keeping free space available.": "Not enough space to prepare this original while keeping free space available.",
-  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated."
+  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
+  "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nWaiting for server confirmation: %lld s (limit 5 minutes).",
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nServer confirmation is unavailable. Check Google Photos before uploading again."
 }

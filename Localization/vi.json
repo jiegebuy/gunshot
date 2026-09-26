@@ -137,5 +137,7 @@
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Đang chờ tải lên giải phóng dung lượng. Quá trình chuẩn bị sẽ tự tiếp tục. Hãy giữ ứng dụng mở.",
   "Preparation is waiting. Turn off Pause uploads to continue.": "Đang chờ chuẩn bị. Tắt Tạm dừng tải lên để tiếp tục.",
   "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng.",
-  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng."
+  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
+  "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
+  "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại."
 }

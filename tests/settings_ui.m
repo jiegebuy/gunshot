@@ -139,10 +139,13 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   CGFloat now=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
   if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,@"unchanged timer polls replaced the switch or moved the settings list");return;}
   // A real changed snapshot still updates, retaining the visible row's position.
+  // Preparation reserves mutation controls but must not disable live polling.
+  [panel setValue:@YES forKey:@"busy"];[panel setValue:@YES forKey:@"preparingBatch"];
   atomic_store(&FixtureConcurrent,3);[panel refresh];
   Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
    CGFloat updated=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
    if(fabs(updated-relative)>1||![((UISwitch *)[panel.tableView cellForRowAtIndexPath:path].accessoryView)isOn]){Finish(NO,@"changed snapshot moved or removed the storage switch");return;}
+   [panel setValue:@NO forKey:@"preparingBatch"];[panel setValue:@NO forKey:@"busy"];
    Capture(window,@"settings-after-polling.png");next();
   },[NSDate dateWithTimeIntervalSinceNow:5]);
  });

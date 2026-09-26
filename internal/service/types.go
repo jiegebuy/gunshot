@@ -42,6 +42,7 @@ type Job struct {
 	Account         string     `json:"account"`
 	Quality         string     `json:"quality"`
 	State           string     `json:"state"`
+	CommitStarted   int64      `json:"commitStarted,omitempty"`
 	Resources       []Resource `json:"resources"`
 	Created         int64      `json:"created"`
 	Timestamp       int64      `json:"timestamp"`
@@ -117,6 +118,7 @@ type Engine struct {
 	stopped                 bool
 	wg                      sync.WaitGroup
 	fault                   bool
+	commitTimeout           time.Duration // zero uses the production five-minute limit
 }
 
 var errRequest = errors.New("invalid request")

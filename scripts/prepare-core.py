@@ -54,6 +54,13 @@ s = p.read_text()
 needle = 'func (a *Api) BearerToken() (string, error) {'
 assert s.count(needle) == 1, 'review upstream bearer-token entry point'
 s = s.replace(needle, needle + '\n if token, native, err := gunshotNativeBearer(a.authData); native { return token, err }')
+start = s.index('func (a *Api) commitSerialized(')
+end = s.index('func (a *Api) doCommitRequest(', start)
+commit = s[start:end]
+assert commit.count('time.Sleep(delay)') == 1
+commit = commit.replace('time.Sleep(delay)', 'if err := gunshotCommitWait(a, delay); err != nil { return "", err }')
+commit = commit.replace('for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {', 'for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {\n if err := gunshotCommitWait(a, 0); err != nil { return "", err }')
+s = s[:start] + commit + s[end:]
 p.write_text(s)
 shutil.copy2(r / 'tests/quality_wire_test.go.txt', d / 'backend/gunshot_quality_wire_test.go')
 

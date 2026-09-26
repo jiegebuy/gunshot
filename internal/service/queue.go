@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -460,6 +461,15 @@ func (e *Engine) Tick() {
 }
 func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	defer e.wg.Done()
+	ctx, cancelCommit := context.WithCancel(ctx)
+	defer cancelCommit()
+	var commitTimer *time.Timer
+	var commitTimedOut atomic.Bool
+	defer func() {
+		if commitTimer != nil {
+			commitTimer.Stop()
+		}
+	}()
 	key, err := e.runner(ctx, paths, snapshot.Account, snapshot.Quality, func(p Progress) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -468,6 +478,14 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 			return
 		}
 		old := j.State
+		if p.State == "committing" && commitTimer == nil {
+			j.CommitStarted = time.Now().Unix()
+			limit := e.commitTimeout
+			if limit <= 0 {
+				limit = 5 * time.Minute
+			}
+			commitTimer = time.AfterFunc(limit, func() { commitTimedOut.Store(true); cancelCommit() })
+		}
 		if p.State == "uploading" || p.State == "committing" || p.State == "preparing" {
 			j.State = p.State
 		}
@@ -504,6 +522,9 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	case j.State == "committing":
 		j.State = "failed"
 		j.Error = "commit_outcome_unknown"
+		if commitTimedOut.Load() {
+			j.Error = "commit_timeout_unknown"
+		}
 	case j.CancelRequested:
 		j.State = "cancelled"
 		j.Error = ""

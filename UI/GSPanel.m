@@ -37,6 +37,7 @@
 @property(nonatomic,strong) NSMutableDictionary *options;
 @property(nonatomic,strong) NSTimer *timer;
 @property(nonatomic) BOOL busy;
+@property(nonatomic) BOOL preparingBatch;
 @property(nonatomic) BOOL refreshing;
 @property(nonatomic) NSUInteger stateGeneration;
 @property(nonatomic) BOOL nativeAuthorizationFailed;
@@ -116,11 +117,11 @@
 }
 - (void)message:(NSString *)message{
  BOOL changed=![self.statusText isEqual:message]||![self.statusLanguage isEqual:GSLanguage()];
- self.statusText=message;self.statusLanguage=GSLanguage();if(changed&&!self.presentedViewController)[self reloadTablePreservingPosition];
+ self.statusText=message;self.statusLanguage=GSLanguage();if(changed&&!self.presentedViewController&&![self isInteractingWithTable])[self reloadTablePreservingPosition];
 }
 - (void)refresh{
  // Presented sheets keep their popover anchor; reloading the table under them can drop the source view (issue #50).
- if(self.busy||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
+ if((self.busy&&!self.preparingBatch)||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
  NSUInteger generation=self.stateGeneration;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
  NSError *error=nil;NSDictionary *accounts=GSRequest(@{@"op":@"accounts"},&error);NSDictionary *options=accounts?GSRequest(@{@"op":@"options"},&error):nil;
@@ -276,6 +277,12 @@
  NSString *sizes=[NSString stringWithFormat:@"%@ / %@",[NSByteCountFormatter stringFromByteCount:uploaded countStyle:NSByteCountFormatterCountStyleFile],[NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]];
  cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ · %@\n%@",states[state?:@""]?:GSL(@"Checking status"),[self qualityTitle:job[@"quality"]],sizes];
  cell.imageView.image=[UIImage systemImageNamed:[state isEqual:@"completed"]?@"checkmark.circle.fill":[state isEqual:@"failed"]?@"exclamationmark.circle":@"icloud.and.arrow.up"];
+ BOOL uncertain=[@[@"commit_outcome_unknown",@"commit_timeout_unknown"]containsObject:job[@"error"]?:@""];
+ if([state isEqual:@"committing"]){
+  long long started=[job[@"commitStarted"]longLongValue];
+  if(started>0)cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingFormat:GSL(@"\nWaiting for server confirmation: %lld s (limit 5 minutes)."),MAX(0LL,(long long)NSDate.date.timeIntervalSince1970-started)];
+ }
+ if(uncertain){cell.imageView.tintColor=UIColor.systemRedColor;cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingString:GSL(@"\nServer confirmation is unavailable. Check Google Photos before uploading again.")];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;return cell;}
  if([state isEqual:@"failed"]){cell.imageView.tintColor=UIColor.systemRedColor;cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingString:GSL(@"\nTap to retry")];}else if([state isEqual:@"completed"])cell.imageView.tintColor=UIColor.systemGreenColor;
  cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;return cell;
 }
@@ -413,7 +420,7 @@
  }else if(path.section==self.queueSection&&path.row<self.jobs.count){
  NSDictionary *j=self.jobs[path.row];NSString *state=j[@"state"];
  UIAlertController *a=[UIAlertController alertControllerWithTitle:j[@"resources"][0][@"name"] message:j[@"error"] preferredStyle:UIAlertControllerStyleActionSheet];
- if([state isEqual:@"failed"])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self request:@{@"op":@"retry",@"id":j[@"id"]}];}]];
+ if([state isEqual:@"failed"]&&[j[@"error"]isEqual:@"upload_failed_check_account_and_network"])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[self request:@{@"op":@"retry",@"id":j[@"id"]}];}]];
  if(![state isEqual:@"completed"]&&![state isEqual:@"cancelled"])[a addAction:[UIAlertAction actionWithTitle:GSL(@"Cancel upload") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){[self request:@{@"op":@"cancel",@"id":j[@"id"]}];}]];
  [a addAction:[UIAlertAction actionWithTitle:GSL(@"Close") style:UIAlertActionStyleCancel handler:nil]];[self sheet:a];
  }
@@ -476,7 +483,7 @@
  if(self.busy||[GSBatchImportSnapshot()[@"active"]boolValue]){[self message:GSL(@"Wait for the operation to finish, then retry.")];return;}
  NSString *account=self.accounts[@"selected"],*identity=GSNativeAccountSummary()[@"identifier"];
  if(!account.length||(GSIsGooglePhotos()&&!identity.length)){[self message:GS_ACCOUNT_HELP];return;}
- self.stateGeneration++;self.busy=YES;
+ self.stateGeneration++;self.busy=YES;self.preparingBatch=YES;
  __weak GSPanel *weak=self;
  __block UIBackgroundTaskIdentifier task=UIBackgroundTaskInvalid;
  task=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{GSStopBatchImport(YES);if(task!=UIBackgroundTaskInvalid){[UIApplication.sharedApplication endBackgroundTask:task];task=UIBackgroundTaskInvalid;}}];
@@ -484,9 +491,9 @@
   [weak message:[weak batchStatus:state]];
  },^(NSDictionary *state){
   if(task!=UIBackgroundTaskInvalid){[UIApplication.sharedApplication endBackgroundTask:task];task=UIBackgroundTaskInvalid;}
-  weak.busy=NO;[weak message:[weak batchStatus:state]];
+  weak.busy=NO;weak.preparingBatch=NO;[weak message:[weak batchStatus:state]];[weak refresh];
  });
- if(!started){self.busy=NO;if(task!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:task];[self message:GSL(@"Wait for the operation to finish, then retry.")];}
+ if(!started){self.busy=NO;self.preparingBatch=NO;if(task!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:task];[self message:GSL(@"Wait for the operation to finish, then retry.")];}
  else [self message:[self batchStatus:GSBatchImportSnapshot()]];
 }
 @end

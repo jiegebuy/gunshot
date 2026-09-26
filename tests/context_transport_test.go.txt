@@ -35,6 +35,14 @@ func gunshotAwaitCancellation(t *testing.T, ctx context.Context) {
 		t.Fatal("transport lost cancellation")
 	}
 }
+func TestGunshotCommitWaitStopsWithoutRetry(t *testing.T){
+ ctx,cancel:=context.WithCancel(context.Background());cancel()
+ api:=&Api{client:&http.Client{Transport:contextTransport{ctx:ctx,base:http.DefaultTransport}}}
+ started:=time.Now()
+ if !errors.Is(gunshotCommitWait(api,time.Hour),context.Canceled){t.Fatal("ignored cancellation")}
+ if time.Since(started)>time.Second{t.Fatal("waited through backoff")}
+ if _,err:=api.commitSerialized(nil);!errors.Is(err,context.Canceled){t.Fatal("retried cancelled commit",err)}
+}
 func TestGunshotTransportPreservesRequestContext(t *testing.T) {
 	type key struct{}
 	parent, cancel := context.WithTimeout(context.WithValue(context.Background(), key{}, "request value"), time.Minute)
