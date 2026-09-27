@@ -30,6 +30,8 @@ jobs:
           NSZombieEnabled=YES .build/exporter-binary-test
           clang -O2 -fobjc-arc -framework Foundation -Itests/native-shims UI/GSBatchImport.m tests/batch_import.m -o .build/batch-import-test
           .build/batch-import-test
+          clang -O2 -DGS_JAILED=1 -DGS_TEST_BACKGROUND=1 -fobjc-arc -framework Foundation tests/background_upload.m -o .build/background-upload-test
+          .build/background-upload-test
   core:
     runs-on: ubuntu-latest
     steps:

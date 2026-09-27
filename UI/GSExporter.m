@@ -69,7 +69,11 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
    exported+=data.length;
   }} completionHandler:^(NSError *e){if(!exportError)exportError=e;dispatch_semaphore_signal(done);}];
   [requestLock lock];requestID=started;BOOL cancelNow=cancelWanted;[requestLock unlock];if(cancelNow)[manager cancelDataRequest:started];
-  dispatch_semaphore_wait(done,DISPATCH_TIME_FOREVER);
+  while(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC))!=0){
+   // An iCloud request may produce no data for a long time. Cancellation must
+   // reach PhotoKit even while no dataReceivedHandler is running.
+   if(authorization&&!authorization())cancel();
+  }
   [file closeAndReturnError:nil];
   if(exportError){if(error)*error=exportError;return nil;}[files addObject:url];
  }
@@ -142,12 +146,15 @@ NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier,NSString *acc
 }
 NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
  if(!localIdentifier.length||!account.length){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:3 userInfo:nil];return nil;}
- // One transaction queue spans source lookup -> PhotoKit export -> queue begin.
- // This prevents two native callbacks for the same asset from both scanning and staging it.
- static dispatch_queue_t imports;static dispatch_once_t once;
- dispatch_once(&once,^{imports=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);});
+ // Equal sources use the same lane for lookup/export/seal, including native
+ // callbacks. Other lanes can prepare photos while one waits for iCloud.
+ static dispatch_queue_t imports[4],staging;static dispatch_once_t once;
+ dispatch_once(&once,^{
+  for(NSUInteger i=0;i<4;i++)imports[i]=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);
+  staging=dispatch_queue_create("dev.tqmane.gunshot.asset-staging",DISPATCH_QUEUE_SERIAL);
+ });
  __block NSString *job=nil;__block NSError *failure=nil;
- dispatch_sync(imports,^{@autoreleasepool{
+ dispatch_sync(imports[localIdentifier.hash%4],^{@autoreleasepool{
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
   NSDictionary *existing=GSRequest(@{@"op":@"source_lookup",@"account":account,@"quality":quality?:@"original",@"sourceID":localIdentifier},&failure);
   if(existing&&[existing[@"found"]boolValue]){
@@ -173,7 +180,9 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
    // may cross queues. GSExportAsset remains for callers that already own an asset.
    NSArray *files=GSWriteOriginalResources(asset,directory,authorization,progress,&failure);
    if(files&&authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
-   if(files)job=GSImportFilesWithSource(files,account,quality,asset.creationDate,localIdentifier,authorization,progress,&failure);
+   // Recheck capacity and copy one completed export at a time. This keeps the
+   // queue's disk budget atomic while PhotoKit preparations overlap.
+   if(files)dispatch_sync(staging,^{job=GSImportFilesWithSource(files,account,quality,asset.creationDate,localIdentifier,authorization,progress,&failure);});
   } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
  }});
  if(error)*error=failure;return job;

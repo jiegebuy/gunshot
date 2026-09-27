@@ -31,6 +31,52 @@ static NSString *GSCheckBatchAccount(GSImportBatch *batch){
  if(!accounts)return @"service_unavailable";
  return [accounts[@"selected"]isEqual:batch.account]?nil:@"account_changed";
 }
+static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUInteger workers,
+ GSBatchItemProvider provider,NSString *quality,NSMutableDictionary *state,GSBatchProgress progress){
+ NSObject *lock=[NSObject new];__block NSUInteger next=0,active=0;
+ __block NSTimeInterval lastUpdate=0;
+ NSMutableDictionary *failures=[NSMutableDictionary dictionary];
+ dispatch_group_t group=dispatch_group_create();
+ state[@"preparationWorkers"]=@(workers);
+ for(NSUInteger worker=0;worker<workers;worker++)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
+  while(YES){@autoreleasepool{
+   id item=nil;
+   @synchronized(lock){
+    if(batch.stopReason||next>=count)break;
+    // A provider is never invoked concurrently and only passes immutable IDs.
+    item=provider(next++);active++;state[@"activePreparations"]=@(active);
+    state[@"stage"]=@"exporting";GSRecordBatch(state);
+   }
+   NSString *reason=GSCheckBatchAccount(batch);NSError *error=nil;NSString *job=nil;
+   if(!reason&&[item isKindOfClass:NSString.class])job=GSImportPhotoIdentifierWithProgress(item,batch.account,quality,
+    ^BOOL{return GSCheckBatchAccount(batch)==nil;},^(NSDictionary *storage){
+     @synchronized(lock){[state addEntriesFromDictionary:storage];GSRecordBatch(state);}
+    },&error);
+   if(!reason)reason=GSCheckBatchAccount(batch);
+   @synchronized(lock){
+    active--;state[@"activePreparations"]=@(active);
+    if(reason){if(!batch.stopReason)batch.stopReason=reason;}
+    else if(!job&&[error.domain isEqual:@"Gunshot.IPC"]){batch.stopReason=@"queue_rejected";}
+    else {
+     state[@"processed"]=@([state[@"processed"]unsignedIntegerValue]+1);
+     NSString *key=job?@"queued":@"failed";state[key]=@([state[key]unsignedIntegerValue]+1);
+     if(!job){
+      BOOL space=[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
+      NSString *code=!item?@"inaccessible":space?@"storage_deferred":@"export_failed";
+      failures[code]=@([failures[code]unsignedIntegerValue]+1);
+      if(space){state[@"storageDeferred"]=failures[code];state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};}
+     }
+    }
+    state[@"remaining"]=@(count-[state[@"processed"]unsignedIntegerValue]);state[@"failureCodes"]=[failures copy];
+    GSRecordBatch(state);
+    NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+    if(progress&&now-lastUpdate>=0.25){lastUpdate=now;NSDictionary *snapshot=[state copy];dispatch_async(dispatch_get_main_queue(),^{progress(snapshot);});}
+   }
+  }}
+ });
+ dispatch_group_wait(group,DISPATCH_TIME_FOREVER);
+ return batch.stopReason;
+}
 BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchItemProvider provider,
  NSString *account,NSString *identity,GSBatchProgress progress,GSBatchProgress completion){
  NSCAssert(NSThread.isMainThread,@"Start import on main");
@@ -51,7 +97,11 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
   NSUInteger processed=0,queued=0,failed=0;
   NSMutableDictionary *failures=[NSMutableDictionary dictionary];
   NSTimeInterval lastUpdate=0;
-  for(NSUInteger index=0;index<count&&!reason;index++){@autoreleasepool{
+  if(assets&&!reason){
+   NSUInteger workers=MIN(count,MIN(4,MAX(1,[options[@"concurrent"]unsignedIntegerValue])));
+   reason=GSPreparePhotos(batch,count,workers,provider,quality,state,progress);
+  }
+  for(NSUInteger index=0;!assets&&index<count&&!reason;index++){@autoreleasepool{
    reason=GSCheckBatchAccount(batch);if(reason)break;
    state[@"stage"]=@"exporting";GSRecordBatch(state);
    id item=provider(index);NSError *error=nil;

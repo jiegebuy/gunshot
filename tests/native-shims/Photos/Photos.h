@@ -6,6 +6,7 @@ typedef NS_OPTIONS(NSUInteger, PHAssetMediaSubtype) { PHAssetMediaSubtypeNone=0,
 typedef NS_ENUM(NSInteger, PHAssetResourceType) { PHAssetResourceTypePhoto=1, PHAssetResourceTypeVideo=2, PHAssetResourceTypePairedVideo=9 };
 @interface PHAsset : NSObject
 @property(nonatomic,copy) NSString *localIdentifier;
+@property(nonatomic,copy) NSString *fixtureQueueLabel;
 @property(nonatomic,strong) NSDate *creationDate;
 @property(nonatomic) PHAssetMediaType mediaType;
 @property(nonatomic) PHAssetMediaSubtype mediaSubtypes;

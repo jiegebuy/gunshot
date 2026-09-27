@@ -3,6 +3,7 @@
 #import "GSPhotosGlass.h"
 #import "GSExporter.h"
 #import "GSBatchImport.h"
+#import "GSBackgroundUpload.h"
 #import "GSAlbumPicker.h"
 #import "GSNativeAccount.h"
 #import "GSAccountConnection.h"
@@ -150,7 +151,7 @@
  if([runtime[@"authorization"]isEqual:@"validated"])authorization=GSL(@"Authenticated");
  if(![options[@"paused"]boolValue]){
   if(![runtime[@"conditionsAccepted"]boolValue])readiness=GSL(@"Could not apply upload conditions (check diagnostics)");
-  else if(![runtime[@"foreground"]boolValue])readiness=GSL(@"Waiting for the app to enter the foreground");
+  else if(![runtime[@"foreground"]boolValue]&&![runtime[@"backgroundUpload"][@"granted"]boolValue])readiness=GSL(@"Waiting for the app to enter the foreground");
   else if([runtime[@"path"]isEqual:@"unknown"])readiness=GSL(@"Checking network status");
   else if(![runtime[@"networkOnline"]boolValue])readiness=GSL(@"Waiting for a network connection");
  }
@@ -486,16 +487,13 @@
  if(!account.length||(GSIsGooglePhotos()&&!identity.length)){[self message:GS_ACCOUNT_HELP];return;}
  self.stateGeneration++;self.busy=YES;self.preparingBatch=YES;
  __weak GSPanel *weak=self;
- __block UIBackgroundTaskIdentifier task=UIBackgroundTaskInvalid;
- task=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{GSStopBatchImport(YES);if(task!=UIBackgroundTaskInvalid){[UIApplication.sharedApplication endBackgroundTask:task];task=UIBackgroundTaskInvalid;}}];
  BOOL started=GSStartBatchImport(count,source,assets,provider,account,identity,^(NSDictionary *state){
   [weak message:[weak batchStatus:state]];
  },^(NSDictionary *state){
-  if(task!=UIBackgroundTaskInvalid){[UIApplication.sharedApplication endBackgroundTask:task];task=UIBackgroundTaskInvalid;}
   weak.busy=NO;weak.preparingBatch=NO;[weak message:[weak batchStatus:state]];[weak refresh];
  });
- if(!started){self.busy=NO;self.preparingBatch=NO;if(task!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:task];[self message:GSL(@"Wait for the operation to finish, then retry.")];}
- else [self message:[self batchStatus:GSBatchImportSnapshot()]];
+ if(!started){self.busy=NO;self.preparingBatch=NO;[self message:GSL(@"Wait for the operation to finish, then retry.")];}
+ else {GSBeginBackgroundUpload(count);[self message:[self batchStatus:GSBatchImportSnapshot()]];}
 }
 @end
 

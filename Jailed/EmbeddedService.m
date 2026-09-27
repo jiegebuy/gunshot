@@ -6,6 +6,7 @@
 #import "libgotohp.h"
 #import "GSRequestRole.h"
 #import "../UI/GSNativeAccount.h"
+#import "../UI/GSBackgroundUpload.h"
 
 // No external IPC in the jailed host. SSO can wait on main, so runtime snapshots
 // must never wait on the core queue (including when exporting diagnostics).
@@ -24,7 +25,7 @@ static void GSRecord(NSDictionary *values) {
  GSStateInitialize();[GSStateLock lock];[GSState addEntriesFromDictionary:values];[GSStateLock unlock];
 }
 NSDictionary *GSEmbeddedRuntimeSnapshot(void) {
- GSStateInitialize();[GSStateLock lock];NSDictionary *snapshot=[GSState copy];[GSStateLock unlock];return snapshot;
+ GSStateInitialize();[GSStateLock lock];NSMutableDictionary *snapshot=[GSState mutableCopy];[GSStateLock unlock];snapshot[@"backgroundUpload"]=GSBackgroundUploadSnapshot();return snapshot;
 }
 static NSDictionary *GSCall(NSDictionary *request,const char *role) {
  NSData *data=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
@@ -47,7 +48,8 @@ static void GSConditions(void) {
  if(!GSReady)return;
  // ObjC relational/logical expressions have type int: @(a && b) becomes JSON
  // 1/0, which Go correctly rejects for a bool field. Always box real booleans.
- NSDictionary *result=GSCall(@{@"op":@"conditions",@"online":([state[@"foreground"]boolValue]&&[state[@"networkOnline"]boolValue])?@YES:@NO,@"wifi":[state[@"wifi"]boolValue]?@YES:@NO,@"charging":[state[@"charging"]boolValue]?@YES:@NO},"daemon");
+ BOOL execution=[state[@"foreground"]boolValue]||[state[@"backgroundUpload"][@"granted"]boolValue];
+ NSDictionary *result=GSCall(@{@"op":@"conditions",@"online":(execution&&[state[@"networkOnline"]boolValue])?@YES:@NO,@"wifi":[state[@"wifi"]boolValue]?@YES:@NO,@"charging":[state[@"charging"]boolValue]?@YES:@NO},"daemon");
  GSRecord(@{@"conditionsAccepted":result?@YES:@NO});
 }
 static void GSSampleApplication(void) {
@@ -74,7 +76,7 @@ static void GSStart(void) {
  });
  dispatch_async(dispatch_get_main_queue(),^{
  UIDevice.currentDevice.batteryMonitoringEnabled=YES;
- for(NSString *name in @[UIApplicationDidBecomeActiveNotification,UIApplicationDidEnterBackgroundNotification,UIApplicationWillEnterForegroundNotification,UISceneDidActivateNotification,UISceneWillDeactivateNotification,UISceneDidEnterBackgroundNotification,UISceneWillEnterForegroundNotification,UIDeviceBatteryStateDidChangeNotification])
+ for(NSString *name in @[GSBackgroundUploadChanged,UIApplicationDidBecomeActiveNotification,UIApplicationDidEnterBackgroundNotification,UIApplicationWillEnterForegroundNotification,UISceneDidActivateNotification,UISceneWillDeactivateNotification,UISceneDidEnterBackgroundNotification,UISceneWillEnterForegroundNotification,UIDeviceBatteryStateDidChangeNotification])
   [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){GSSampleApplication();}];
  GSSampleApplication();
  });

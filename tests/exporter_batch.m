@@ -8,18 +8,19 @@
 // Exercise the real PhotoKit exporter, 32 KiB IPC importer and batch worker.
 // Opaque bytes stand in for PhotoKit originals; no codec or network is mocked
 // as successfully decoding these bytes.
-static NSUInteger Queued,Written;
+static NSUInteger Queued;
+static atomic_ulong Written;
 static BOOL IncludeUnreadable;
 static BOOL RejectAppend;
 static BOOL SlashHeavy;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
-static NSString *FetchQueueLabel;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
-static NSUInteger CapacityWaits,PausedWaits,StorageEvents,FreeReads,CloudCancelled;
+static NSUInteger CapacityWaits,PausedWaits,StorageEvents,CloudCancelled;
+static atomic_ulong FreeReads;
 static BOOL LowSpace,LowSpaceDuringExport;
 static atomic_int CloudCancel;
 unsigned long long GSFixtureFreeBytes(void){FreeReads++;return LowSpace||(LowSpaceDuringExport&&FreeReads>1)?GSStorageReserve:32ULL<<30;}
@@ -43,7 +44,7 @@ static NSData *OriginalBytes(BOOL movie){
 @implementation PHAsset
 + (PHFetchResult *)fetchAssetsWithLocalIdentifiers:(NSArray *)ids options:(id)options{
  assert(!NSThread.isMainThread&&ids.count==1);
- NSString *identifier=ids.firstObject;FetchQueueLabel=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;
+ NSString *identifier=ids.firstObject;PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;asset.fixtureQueueLabel=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));
  asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];asset.mediaType=PHAssetMediaTypeImage;
  if(identifier.intValue==5)asset.mediaSubtypes=PHAssetMediaSubtypePhotoLive;
  PHFetchResult *result=[PHFetchResult new];result.items=@[asset];return result;
@@ -54,7 +55,7 @@ static NSData *OriginalBytes(BOOL movie){
 @end
 @implementation PHAssetResource
 + (NSArray *)assetResourcesForAsset:(PHAsset *)asset{
- if(![asset.localIdentifier isEqual:@"native"]){NSString *label=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));assert([label isEqual:FetchQueueLabel]);}
+ if(![asset.localIdentifier isEqual:@"native"]){NSString *label=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));assert([label isEqual:asset.fixtureQueueLabel]);}
  PHAssetResource *photo=[PHAssetResource new];photo.type=PHAssetResourceTypePhoto;
  photo.originalFilename=asset.localIdentifier.intValue%2?@"original.HEIC":@"original.heif";
  photo.unreadable=IncludeUnreadable&&asset.localIdentifier.intValue==30;
@@ -71,10 +72,11 @@ static NSData *OriginalBytes(BOOL movie){
 - (void)cancelDataRequest:(PHAssetResourceDataRequestID)requestID{assert(requestID==1);CloudCancelled++;atomic_store(&CloudCancel,1);}
 - (PHAssetResourceDataRequestID)requestDataForAssetResource:(PHAssetResource *)resource options:(PHAssetResourceRequestOptions *)options dataReceivedHandler:(void (^)(NSData *))handler completionHandler:(void (^)(NSError *))completion{
  assert(!NSThread.isMainThread&&options.networkAccessAllowed);
- int active=atomic_fetch_add(&ActiveExports,1)+1;if(active>atomic_load(&PeakExports))atomic_store(&PeakExports,active);assert(active==1);
+ int active=atomic_fetch_add(&ActiveExports,1)+1;if(active>atomic_load(&PeakExports))atomic_store(&PeakExports,active);assert(active<=4);
  atomic_store(&CloudCancel,0);BOOL unreadable=resource.unreadable;
  NSData *bytes=OriginalBytes(resource.type==PHAssetResourceTypePairedVideo);Written++;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  [NSThread sleepForTimeInterval:0.01]; // Model an asynchronous PhotoKit/iCloud wait.
   NSError *failure=unreadable?[NSError errorWithDomain:@"private-resource-error" code:99 userInfo:nil]:nil;
   if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=1048576){
    handler([bytes subdataWithRange:NSMakeRange(offset,MIN(1048576,bytes.length-offset))]);
@@ -116,14 +118,14 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   return @{@"retainedBytes":@(full?(8ULL<<30):0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?(8ULL<<30):0),@"paused":paused?@YES:@NO};
  }
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
- if([op isEqual:@"options"])return @{@"quality":@"original"};
+ if([op isEqual:@"options"])return @{@"quality":@"original",@"concurrent":@8};
  if([op isEqual:@"source_lookup"]){
-  NSString *job=SourceJobs[request[@"sourceID"]];return job?@{@"found":@YES,@"id":job,@"state":@"completed"}:@{@"found":@NO};
+  @synchronized(SourceJobs){NSString *job=SourceJobs[request[@"sourceID"]];return job?@{@"found":@YES,@"id":job,@"state":@"completed"}:@{@"found":@NO};}
  }
  if([op isEqual:@"begin"]){
   assert([request[@"quality"]isEqual:@"original"]&&[request[@"account"]isEqual:@"fixture@example.com"]&&[request[@"timestamp"]longLongValue]==123);
   assert([request[@"sourceID"]length]>0);
-  SourceJobs[request[@"sourceID"]]=@"fixture-job";
+  @synchronized(SourceJobs){SourceJobs[request[@"sourceID"]]=@"fixture-job";}
   ExpectedResources=request[@"resources"];Received=[NSMutableArray array];
   for(NSDictionary *resource in ExpectedResources){assert([resource[@"size"]unsignedIntegerValue]==FixtureSize);[Received addObject:[NSMutableData data]];}
   return @{@"id":@"fixture-job"};
@@ -173,7 +175,13 @@ int main(void){@autoreleasepool{
   [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
- assert(atomic_load(&PeakExports)==1);
+ assert(atomic_load(&PeakExports)>1&&atomic_load(&PeakExports)<=4);
+ NSUInteger beforeDuplicates=Written;
+ for(NSUInteger i=0;i<12;i++)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSImportPhotoIdentifier(@"same-source",@"fixture@example.com",@"original",nil));
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ assert(Written==beforeDuplicates+1); // Concurrent callers must still export once.
  // Exercise the failure AFTER one successful chunk. The error must survive the
  // exporter's inner autoreleasepool and ARC's out-parameter writeback on the
  // asset-import queue (the exact retain that faulted on the device).

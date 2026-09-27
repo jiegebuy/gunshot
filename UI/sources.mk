@@ -4,6 +4,7 @@ GUNSHOT_UI_FILES = \
 	GSPhotosGlass.m \
 	GSPhotosGlassVisibilityGuard.m \
 	GSBatchImport.m \
+	GSBackgroundUpload.m \
 	GSAlbumPicker.m \
 	GSAccountMenu.m \
 	GSNativeAccount.m \
