@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"crypto/tls"
 	"net/http"
 	"sync"
 )
@@ -13,6 +14,22 @@ var gunshotTransports = map[gunshotTransportKey]*http.Transport{}
 type gunshotTransportKey struct {
 	proxy string
 	base  *http.Transport
+}
+
+// gunshotSeparateUploadConnections keeps concurrent uploads on their own TCP
+// connections. Over HTTP/2 every upload was multiplexed into one flow; through
+// a proxied path that single flow ran far below the uplink (8 uploads, one
+// connection, 0.1-0.6 MB/s). HTTP/1.1 opens one connection per in-flight
+// request (bounded by MaxConnsPerHost); idle ones are reused by later photos.
+func gunshotSeparateUploadConnections(t *http.Transport) {
+	t.ForceAttemptHTTP2 = false
+	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if t.TLSClientConfig != nil {
+		config := t.TLSClientConfig.Clone()
+		config.NextProtos = []string{"http/1.1"} // Never negotiate h2 on a connection we would speak HTTP/1.1 on.
+		t.TLSClientConfig = config
+	}
+	t.WriteBufferSize = 256 << 10 // Fewer, larger TLS records for chunk bodies.
 }
 
 func gunshotSharedTransport(proxy string, candidate *http.Transport) *http.Transport {
@@ -29,6 +46,7 @@ func gunshotSharedTransport(proxy string, candidate *http.Transport) *http.Trans
 			break
 		}
 	}
+	gunshotSeparateUploadConnections(candidate)
 	gunshotTransports[key] = candidate
 	return candidate
 }

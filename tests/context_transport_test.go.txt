@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,6 +90,62 @@ func TestGunshotJobsShareConnectionsWithoutSharingClients(t *testing.T) {
 }
 
 type gunshotRoundTripper func(*http.Request) (*http.Response, error)
+
+func TestGunshotConcurrentUploadsUseSeparateConnections(t *testing.T) {
+	var connections atomic.Int32
+	arrived := make(chan int, 2)
+	release := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- r.ProtoMajor
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	server.EnableHTTP2 = true // The server would accept h2; the client must not multiplex.
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock() // Runs before Close, so a failed assertion cannot hang the server.
+	transport := gunshotSharedTransport("separate-connections-test", server.Client().Transport.(*http.Transport).Clone())
+	client := &http.Client{Transport: transport}
+	done := make(chan error, 2)
+	for range 2 {
+		go func() {
+			response, err := client.Post(server.URL, "application/octet-stream", strings.NewReader("chunk"))
+			if err == nil {
+				io.Copy(io.Discard, response.Body)
+				response.Body.Close()
+			}
+			done <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case proto := <-arrived:
+			if proto != 1 {
+				t.Fatal("upload negotiated HTTP/2", proto)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent uploads were serialized on one connection")
+		}
+	}
+	unblock()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if connections.Load() != 2 {
+		t.Fatal("concurrent uploads shared a connection", connections.Load())
+	}
+}
 
 func (f gunshotRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
