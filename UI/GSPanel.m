@@ -278,7 +278,7 @@
  cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ · %@\n%@",states[state?:@""]?:GSL(@"Checking status"),[self qualityTitle:job[@"quality"]],sizes];
  cell.imageView.image=[UIImage systemImageNamed:[state isEqual:@"completed"]?@"checkmark.circle.fill":[state isEqual:@"failed"]?@"exclamationmark.circle":@"icloud.and.arrow.up"];
  BOOL uncertain=[@[@"commit_outcome_unknown",@"commit_timeout_unknown"]containsObject:job[@"error"]?:@""];
- if([job[@"error"]isEqual:@"upload_stalled"])cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingString:GSL(@"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.")];
+ if([job[@"error"]isEqual:@"upload_stalled"])cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingString:GSL(@"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.")];
  if([state isEqual:@"committing"]){
   long long started=[job[@"commitStarted"]longLongValue];
   if(started>0)cell.detailTextLabel.text=[cell.detailTextLabel.text stringByAppendingFormat:GSL(@"\nWaiting for server confirmation: %lld s (limit 5 minutes)."),MAX(0LL,(long long)NSDate.date.timeIntervalSince1970-started)];
@@ -290,7 +290,7 @@
 - (void)chooseValueForControl:(NSInteger)control{
  NSString *key=@[@"quality",@"concurrent",@"retries"][control];
  UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@[GSL(@"Quality"),GSL(@"Concurrent uploads"),GSL(@"Retry limit")][control] message:nil preferredStyle:UIAlertControllerStyleActionSheet];
- NSArray *values=control==0?@[@"original",@"saver",@"quota"]:control==1?@[@1,@2,@3,@4]:@[@0,@1,@2,@3,@4,@5,@6,@7,@8,@9,@10];
+ NSArray *values=control==0?@[@"original",@"saver",@"quota"]:control==1?@[@1,@2,@3,@4,@6,@8]:@[@0,@1,@2,@3,@4,@5,@6,@7,@8,@9,@10];
  for(id value in values){
   NSString *title=control==0?[self qualityTitle:value]:[NSString stringWithFormat:@"%@ %@",value,control==1?GSL(@"uploads"):GSL(@"retries")];
   if([value isEqual:self.options[key]])title=[@"✓ " stringByAppendingString:title];

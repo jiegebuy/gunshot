@@ -32,7 +32,7 @@ func defaults() Options {
 	return Options{Quality: "original", Concurrent: 1, Retries: 3, WiFiOnly: true}
 }
 func (o Options) valid() bool {
-	return validQuality(o.Quality) && o.Concurrent >= 1 && o.Concurrent <= 4 && o.Retries >= 0 && o.Retries <= 10
+	return validQuality(o.Quality) && o.Concurrent >= 1 && o.Concurrent <= 8 && o.Retries >= 0 && o.Retries <= 10
 }
 func validQuality(q string) bool { return q == "original" || q == "saver" || q == "quota" }
 
@@ -123,6 +123,7 @@ type Engine struct {
 	fault                   bool
 	commitTimeout           time.Duration // zero uses the production five-minute limit
 	uploadIdleTimeout       time.Duration // zero uses two minutes without byte progress
+	smallJobBurst           int
 }
 
 var errRequest = errors.New("invalid request")
@@ -202,6 +203,20 @@ func Open(root string, runner Runner) (*Engine, error) {
 		case "importing":
 			j.State = "cancelled"
 			j.Error = "import_interrupted"
+		case "failed":
+			// Upgrade older stalled workers into resumable retries without
+			// resetting the retry budget or replaying an uncertain commit.
+			if j.Error == "upload_stalled" && j.Attempts <= s.Options.Retries && !j.CancelRequested {
+				paths := make([]string, 0, len(j.Resources))
+				for _, resource := range j.Resources {
+					paths = append(paths, filepath.Join(en.jobDir(j.ID), resource.Name))
+				}
+				if resumablePaths(paths) {
+					j.State = "pending"
+					j.Error = "upload_resuming"
+					j.Next = 0
+				}
+			}
 		}
 		if j.CancelRequested && j.State == "pending" {
 			j.State = "cancelled"

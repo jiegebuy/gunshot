@@ -5,8 +5,15 @@
 // queue drains; the free-space guard reserves both its export and queue copy.
 static const unsigned long long GSStorageReserve=1ULL<<30;
 static const unsigned long long GSStorageQueueLimit=1ULL<<30;
-static inline BOOL GSStorageQueueFull(unsigned long long retained,NSUInteger jobs,unsigned long long incoming){
- return retained>0&&(retained>=GSStorageQueueLimit||incoming>GSStorageQueueLimit-retained||jobs>=128);
+static inline unsigned long long GSStorageQueueBudget(unsigned long long free,unsigned long long buffered){
+ // Use at most one third of the available working space for queued originals,
+ // leaving room for PhotoKit export and its queue copy. Clamp to 1..8 GiB.
+ unsigned long long available=MIN(free,24ULL<<30)+MIN(buffered,24ULL<<30);
+ unsigned long long budget=available>GSStorageReserve?(available-GSStorageReserve)/3:0;
+ return MIN(8ULL<<30,MAX(GSStorageQueueLimit,budget));
+}
+static inline BOOL GSStorageQueueFull(unsigned long long retained,NSUInteger jobs,unsigned long long incoming,unsigned long long budget){
+ return retained>0&&(retained>=budget||incoming>budget-retained||jobs>=128);
 }
 static inline unsigned long long GSStorageFreeBytes(NSURL *directory){
 #if GS_TEST_STORAGE

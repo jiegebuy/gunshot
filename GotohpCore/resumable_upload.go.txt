@@ -22,7 +22,7 @@ import (
 )
 
 const gunshotResumeThreshold int64 = 32 << 20
-const gunshotResumeChunk int64 = 4 << 20
+const gunshotResumeChunk int64 = 8 << 20
 const gunshotUploadEndpoint = "https://photos.googleapis.com/data/upload/uploadmedia/interactive"
 
 // Session URLs are bearer capabilities. Keep this sidecar private beside the
@@ -43,6 +43,20 @@ type gunshotUploadSession struct {
 func gunshotSessionPath(path string) string {
 	sum := sha256.Sum256([]byte(filepath.Base(path)))
 	return filepath.Join(filepath.Dir(path), ".upload-"+hex.EncodeToString(sum[:8])+".json")
+}
+
+// Expose only a capability check to the queue, never the secret session URL.
+func GunshotHasUploadCheckpoint(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil || st.Size() < gunshotResumeThreshold {
+		return false
+	}
+	raw, err := os.ReadFile(gunshotSessionPath(path))
+	if err != nil || len(raw) > 1<<20 {
+		return false
+	}
+	var s gunshotUploadSession
+	return json.Unmarshal(raw, &s) == nil && s.Version == 1 && s.Size == st.Size() && s.Offset >= 0 && s.Offset <= s.Size && gunshotSafeUploadURL(s.URL) && (s.Protocol == "scotty" || s.Protocol == "range")
 }
 func (a *Api) gunshotAccountKey() string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%t|%t", a.authData, a.saver, a.useQuota)))
@@ -243,6 +257,10 @@ func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotU
 		return 0, nil, errors.New("resumable transfer interrupted")
 	}
 	defer resp.Body.Close()
+	if query || resp.StatusCode >= 400 {
+		metadata, _ := json.Marshal(map[string]any{"protocol": s.Protocol, "query": query, "status": resp.StatusCode, "uploadStatus": resp.Header.Get("X-Goog-Upload-Status"), "received": resp.Header.Get("X-Goog-Upload-Size-Received"), "range": resp.Header.Get("Range")})
+		_ = os.WriteFile(filepath.Join(filepath.Dir(path), ".upload-transfer-diagnostic.json"), metadata, 0600)
+	}
 	if resp.StatusCode == 404 || resp.StatusCode == 410 {
 		return 0, nil, errors.New("upload session expired; manual restart required")
 	}
@@ -352,9 +370,10 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 			chunk = (chunk / s.Granularity) * s.Granularity
 			n := min(chunk, s.Size-s.Offset)
 			start := s.Offset
+			currentAttempt := attempt
 			reader := NewProgressReader(io.NewSectionReader(f, start, n), n, func(sent, total int64) {
 				if onProgress != nil {
-					onProgress(start+sent, s.Size, attempt)
+					onProgress(start+sent, s.Size, currentAttempt)
 				}
 			})
 			accepted, final, err = a.gunshotResumeRequest(ctx, path, s, start, n, reader)

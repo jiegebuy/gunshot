@@ -160,6 +160,9 @@ func TestResumableUploadRecoversServerOffsetAfterBrokenConnection(t *testing.T) 
 	if len(final.Raw) == 0 || server.received != server.size || server.starts != 1 || server.queries < 3 {
 		t.Fatal("resume did not finish", server)
 	}
+	if !GunshotHasUploadCheckpoint(path) {
+		t.Fatal("queue cannot detect resumable upload")
+	}
 	checkpoint, err := api.gunshotLoadSession(path, "synthetic-hash", server.size)
 	if err != nil || checkpoint.Offset != server.size || len(checkpoint.Finalize) == 0 {
 		t.Fatal("checkpoint not durable", err)

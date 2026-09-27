@@ -428,27 +428,10 @@ func (e *Engine) Tick() {
 		return
 	}
 	now := time.Now().Unix()
-	for _, j := range e.state.Jobs {
-		if len(e.active) >= e.state.Options.Concurrent {
-			return
-		}
-		if e.reconciler != nil && uncertainCommit(j) && len(j.Resources) == 1 && j.Next <= now {
-			if _, running := e.active[j.ID]; running {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			e.active[j.ID] = cancel
-			j.Next = now + 300
-			e.wg.Add(1)
-			go e.reconcileCommit(ctx, *j, cancel)
-			continue
-		}
-		if j.State != "pending" || j.Next > now {
-			continue
-		}
-		// Missing/expired host authorization waits without consuming retry budget.
-		if e.nativeAuthorization(j.Account) == "waiting" {
-			continue
+	for len(e.active) < e.state.Options.Concurrent {
+		j := e.nextPendingUpload(now)
+		if j == nil {
+			break
 		}
 		j.State = "preparing"
 		if j.Quality == "original" {
@@ -468,6 +451,23 @@ func (e *Engine) Tick() {
 		}
 		e.wg.Add(1)
 		go e.execute(ctx, *j, paths)
+	}
+	// Read-only reconciliation uses spare capacity after runnable uploads.
+	for _, j := range e.state.Jobs {
+		if len(e.active) >= e.state.Options.Concurrent {
+			return
+		}
+		if e.reconciler == nil || !uncertainCommit(j) || len(j.Resources) != 1 || j.Next > now {
+			continue
+		}
+		if _, running := e.active[j.ID]; running {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		e.active[j.ID] = cancel
+		j.Next = now + 300
+		e.wg.Add(1)
+		go e.reconcileCommit(ctx, *j, cancel)
 	}
 }
 func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
@@ -491,7 +491,8 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		j := e.find(snapshot.ID)
-		if j == nil {
+		_, active := e.active[snapshot.ID]
+		if j == nil || !active || j.Attempts != snapshot.Attempts {
 			return
 		}
 		old := j.State
@@ -552,6 +553,11 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	case watch.didStall():
 		j.State = "failed"
 		j.Error = "upload_stalled"
+		if j.Attempts <= e.state.Options.Retries && resumablePaths(paths) {
+			j.State = "pending"
+			j.Error = "upload_resuming"
+			j.Next = time.Now().Add(5 * time.Second).Unix()
+		}
 	case e.stopped || errors.Is(err, context.Canceled):
 		// Lifecycle / network pauses do not consume the failure retry budget.
 		if j.Attempts > 0 {

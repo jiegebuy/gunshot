@@ -1,0 +1,34 @@
+package backend
+
+import (
+	"net/http"
+	"sync"
+)
+
+// Each job still owns its account, cancellation and client. Only TCP/TLS pools
+// are shared, avoiding a new connection pair for every small photo.
+var gunshotTransportMu sync.Mutex
+var gunshotTransports = map[gunshotTransportKey]*http.Transport{}
+
+type gunshotTransportKey struct {
+	proxy string
+	base  *http.Transport
+}
+
+func gunshotSharedTransport(proxy string, candidate *http.Transport) *http.Transport {
+	key := gunshotTransportKey{proxy, http.DefaultTransport.(*http.Transport)}
+	gunshotTransportMu.Lock()
+	defer gunshotTransportMu.Unlock()
+	if existing := gunshotTransports[key]; existing != nil {
+		return existing
+	}
+	if len(gunshotTransports) >= 8 {
+		for k, old := range gunshotTransports {
+			old.CloseIdleConnections()
+			delete(gunshotTransports, k)
+			break
+		}
+	}
+	gunshotTransports[key] = candidate
+	return candidate
+}

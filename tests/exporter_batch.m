@@ -113,7 +113,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
  if([op isEqual:@"import_capacity"]){
   BOOL full=CapacityWaits>0,paused=PausedWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;
-  return @{@"retainedBytes":@(full?GSStorageQueueLimit:0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?GSStorageQueueLimit:0),@"paused":paused?@YES:@NO};
+  return @{@"retainedBytes":@(full?(8ULL<<30):0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?(8ULL<<30):0),@"paused":paused?@YES:@NO};
  }
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
  if([op isEqual:@"options"])return @{@"quality":@"original"};
@@ -211,10 +211,13 @@ int main(void){@autoreleasepool{
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
  dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
-  assert(GSStorageQueueFull(GSStorageQueueLimit,1,0));
-  assert(GSStorageQueueFull(GSStorageQueueLimit-1,1,2));
-  assert(GSStorageQueueFull(1,128,0));
-  assert(!GSStorageQueueFull(0,0,8ULL<<30)); // oversized asset runs alone
+  assert(GSStorageQueueFull(GSStorageQueueLimit,1,0,GSStorageQueueLimit));
+  assert(GSStorageQueueFull(GSStorageQueueLimit-1,1,2,GSStorageQueueLimit));
+  assert(GSStorageQueueFull(1,128,0,GSStorageQueueLimit));
+  assert(!GSStorageQueueFull(0,0,8ULL<<30,GSStorageQueueLimit)); // oversized asset runs alone
+  unsigned long long roomy=GSStorageQueueBudget(23ULL<<30,2231778024ULL);
+  assert(roomy>2231778024ULL&&!GSStorageQueueFull(2231778024ULL,1,32ULL<<20,roomy));
+  assert(GSStorageQueueBudget(1ULL<<30,0)==GSStorageQueueLimit);
   CapacityWaits=2;StorageEvents=0;
   assert(GSImportPhotoIdentifierWithProgress(@"capacity-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){if([s[@"stage"]isEqual:@"waiting_storage"])StorageEvents++;},nil));
   assert(CapacityWaits==0&&StorageEvents==2);

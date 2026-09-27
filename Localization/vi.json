@@ -140,5 +140,6 @@
   "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
   "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
-  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu."
+  "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu.",
+  "\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Khi thử lại, phiên đã lưu được kiểm tra trước khi gửi tiếp."
 }

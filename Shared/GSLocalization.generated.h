@@ -5,6 +5,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
  dispatch_once(&once, ^{ catalogs = @{
   @"en": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
+   @"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": @"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.",
    @"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": @"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.",
    @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nServer confirmation is unavailable. Check Google Photos before uploading again.",
    @"\nTap to retry": @"\nTap to retry",
@@ -149,6 +150,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"ja": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n空き容量不足のため %lu 件のオリジナルをスキップしました。空き容量を確保してアルバムを再選択すると再試行できます。キュー内の項目は重複しません。",
+   @"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": @"\n2分間アップロードが進んでいません。ファイルは保持されています。再試行時は保存済みセッションを確認してから送信を続けます。",
    @"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": @"\n2分間アップロードが進んでいません。ファイルは保持されています。再試行すると最初からアップロードします。",
    @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nサーバーの確認が得られていません。再アップロード前に Google Photos を確認してください。",
    @"\nTap to retry": @"\nタップして再試行できます",
@@ -293,6 +295,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"vi": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
+   @"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": @"\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Khi thử lại, phiên đã lưu được kiểm tra trước khi gửi tiếp.",
    @"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": @"\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu.",
    @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
    @"\nTap to retry": @"\nNhấn để thử lại",
@@ -437,6 +440,7 @@ static inline NSDictionary *GSLocalizationCatalogs(void) {
   },
   @"zh-hans": @{
    @"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": @"\n有 %lu 项原文件因空间不足暂未处理。释放空间后重新选择相册即可重试，已入队项目会自动去重。",
+   @"\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": @"\n上传已连续 2 分钟无进度，文件已保留。重试会先检查已保存的上传会话，再继续发送。",
    @"\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": @"\n上传已连续 2 分钟无进度，文件已保留。重试会从头上传此文件。",
    @"\nServer confirmation is unavailable. Check Google Photos before uploading again.": @"\n尚未获得服务器确认，请先在 Google Photos 核对，避免重复上传。",
    @"\nTap to retry": @"\n点击以重试",

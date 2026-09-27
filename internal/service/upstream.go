@@ -5,9 +5,22 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 )
 
 var errRemoteComponentExists = backend.ErrGunshotRemoteComponentExists
+
+func resumablePaths(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if !backend.GunshotHasUploadCheckpoint(path) {
+			return false
+		}
+	}
+	return true
+}
 
 func Initialize(root string) (*Engine, error) {
 	e, err := Open(root, upload)
@@ -86,11 +99,14 @@ func (e *Engine) accounts(r Request) (any, error) {
 
 type reporter struct {
 	backend.NopReporter
+	mu       sync.Mutex
 	callback func(Progress)
 	uploaded int64
 }
 
 func (r *reporter) ThreadStatus(s backend.ThreadStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	phase := "preparing"
 	switch s.Status {
 	case "uploading":

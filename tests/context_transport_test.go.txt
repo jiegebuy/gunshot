@@ -4,11 +4,48 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestGunshotJobsShareConnectionsWithoutSharingClients(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	first, err := NewHTTPClientWithProxy("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewHTTPClientWithProxy("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || first.Transport != second.Transport {
+		t.Fatal("clients/accounts must be separate but transport reusable")
+	}
+	for _, client := range []*http.Client{first, second} {
+		response, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+	if connections.Load() != 1 {
+		t.Fatal("each job opened a new connection", connections.Load())
+	}
+}
 
 type gunshotRoundTripper func(*http.Request) (*http.Response, error)
 
@@ -35,13 +72,20 @@ func gunshotAwaitCancellation(t *testing.T, ctx context.Context) {
 		t.Fatal("transport lost cancellation")
 	}
 }
-func TestGunshotCommitWaitStopsWithoutRetry(t *testing.T){
- ctx,cancel:=context.WithCancel(context.Background());cancel()
- api:=&Api{client:&http.Client{Transport:contextTransport{ctx:ctx,base:http.DefaultTransport}}}
- started:=time.Now()
- if !errors.Is(gunshotCommitWait(api,time.Hour),context.Canceled){t.Fatal("ignored cancellation")}
- if time.Since(started)>time.Second{t.Fatal("waited through backoff")}
- if _,err:=api.commitSerialized(nil);!errors.Is(err,context.Canceled){t.Fatal("retried cancelled commit",err)}
+func TestGunshotCommitWaitStopsWithoutRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	api := &Api{client: &http.Client{Transport: contextTransport{ctx: ctx, base: http.DefaultTransport}}}
+	started := time.Now()
+	if !errors.Is(gunshotCommitWait(api, time.Hour), context.Canceled) {
+		t.Fatal("ignored cancellation")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("waited through backoff")
+	}
+	if _, err := api.commitSerialized(nil); !errors.Is(err, context.Canceled) {
+		t.Fatal("retried cancelled commit", err)
+	}
 }
 func TestGunshotTransportPreservesRequestContext(t *testing.T) {
 	type key struct{}
