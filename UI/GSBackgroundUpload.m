@@ -53,8 +53,11 @@ static void GSFinishBackground(BOOL success,NSString *status){
 static void GSPollBackground(void){
  if(GSPolling)return;GSPolling=YES;NSUInteger epoch=GSEpoch;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
-  NSDictionary *summary=GSRequest(@{@"op":@"upload_summary"},nil);
+  // Read the producer first: a finished batch has sealed its last job before
+  // we inspect the queue. Reversing these reads can observe an empty queue
+  // just before the final seal and prematurely release the background grant.
   NSDictionary *batch=GSBatchImportSnapshot();
+  NSDictionary *summary=GSRequest(@{@"op":@"upload_summary"},nil);
   NSUInteger outstanding=0;
   for(NSDictionary *profile in [summary[@"profiles"]allValues])for(NSString *key in @[@"importing",@"pending",@"preparing",@"uploading",@"committing"])
    outstanding+=[profile[@"states"][key]unsignedIntegerValue];

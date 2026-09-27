@@ -15,6 +15,7 @@ static void (^Launch)(id<GSContinuedTask>);
 static void (^ShortExpiration)(void);
 static NSDictionary *Batch,*Summary;
 static NSUInteger Stops,ShortEnds,RequestCancels;
+static BOOL SealDuringSummary;
 @implementation GSFixtureBundle
 + (instancetype)mainBundle{return [self new];}
 - (NSString *)bundleIdentifier{return @"dev.fixture";}
@@ -47,7 +48,10 @@ static NSUInteger Stops,ShortEnds,RequestCancels;
 - (void)setTaskCompletedWithSuccess:(BOOL)success{self.completions++;self.success=success;}
 - (void)updateTitle:(NSString *)title subtitle:(NSString *)subtitle{}
 @end
-NSDictionary *GSRequest(NSDictionary *request,NSError **error){return Summary;}
+NSDictionary *GSRequest(NSDictionary *request,NSError **error){
+ if(SealDuringSummary){SealDuringSummary=NO;Batch=@{@"active":@NO,@"stage":@"finished",@"processed":@10,@"failed":@0};}
+ return Summary;
+}
 NSDictionary *GSBatchImportSnapshot(void){return Batch;}
 void GSStopBatchImport(BOOL expired){assert(expired);Stops++;}
 static void Drain(void){NSDate *end=[NSDate dateWithTimeIntervalSinceNow:0.1];while(end.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];}
@@ -59,6 +63,7 @@ int main(void){@autoreleasepool{
  SetWork(YES,2);GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"requested"]);
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);
  FixtureTask *first=[FixtureTask new];Launch(first);Drain();assert([GSBackgroundUploadSnapshot()[@"granted"]boolValue]&&ShortEnds==1);
+ SetWork(YES,0);SealDuringSummary=YES;GSPollBackground();Drain();assert(first.completions==0); // Final seal racing a summary cannot complete the task.
  SetWork(NO,2);GSPollBackground();Drain();assert(first.completions==0); // Prepared is not uploaded.
  SetWork(NO,0);GSPollBackground();Drain();assert(first.completions==1&&first.success&&first.progress.fractionCompleted==1);
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);

@@ -182,7 +182,8 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
    if(files&&authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
    // Recheck capacity and copy one completed export at a time. This keeps the
    // queue's disk budget atomic while PhotoKit preparations overlap.
-   if(files)dispatch_sync(staging,^{job=GSImportFilesWithSource(files,account,quality,asset.creationDate,localIdentifier,authorization,progress,&failure);});
+   NSDate *date=[asset.creationDate copy];
+   if(files)dispatch_sync(staging,^{job=GSImportFilesWithSource(files,account,quality,date,localIdentifier,authorization,progress,&failure);});
   } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
  }});
  if(error)*error=failure;return job;
