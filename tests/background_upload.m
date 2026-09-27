@@ -60,6 +60,8 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
 NSDictionary *GSBatchImportSnapshot(void){return Batch;}
 void GSStopBatchImport(BOOL expired){assert(expired);Stops++;}
 static void Drain(void){NSDate *end=[NSDate dateWithTimeIntervalSinceNow:0.1];while(end.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];}
+static void Wait(NSTimeInterval seconds){NSDate *end=[NSDate dateWithTimeIntervalSinceNow:seconds];while(end.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];}
+static void Foreground(void){[NSNotificationCenter.defaultCenter postNotificationName:UIApplicationDidBecomeActiveNotification object:nil];Drain();}
 static void SetWork(BOOL active,NSUInteger pending){
  Batch=@{@"active":@(active),@"stage":active?@"exporting":@"finished",@"processed":active?@1:@10,@"failed":@0};
  Summary=@{@"profiles":@{@"original":@{@"states":@{@"pending":@(pending)}}},@"conditions":@{@"paused":@NO}};
@@ -78,6 +80,11 @@ int main(void){@autoreleasepool{
  assert(ended>=GSDeferredBase&&open>=GSDeferredBase&&expiring>=GSDeferredBase&&!RealNext);
  [app endBackgroundTask:ended];[app endBackgroundTask:ended];assert(ShortEnds==1); // Local and stale ends stay local.
  assert([GSBackgroundUploadSnapshot()[@"deferredTasks"]isEqual:(@{@"begun":@3,@"open":@2,@"handedBack":@0,@"handedBackOpen":@0})]);
+ // Moving bytes advance progress even while item counts stand still; idleness does not.
+ Summary=@{@"profiles":@{@"original":@{@"states":@{@"pending":@2}}},@"conditions":@{@"paused":@NO},@"transport":@{@"recentUploadBodyBytesPerSecond":@4096}};
+ GSPollBackground();Drain();int64_t moving=first.progress.completedUnitCount;
+ GSPollBackground();Drain();assert(first.progress.completedUnitCount==moving+1);
+ SetWork(YES,2);GSPollBackground();Drain();GSPollBackground();Drain();assert(first.progress.completedUnitCount==moving+1);
  SetWork(YES,0);SealDuringSummary=YES;GSPollBackground();Drain();assert(first.completions==0); // Final seal racing a summary cannot complete the task.
  SetWork(NO,2);GSPollBackground();Drain();assert(first.completions==0); // Prepared is not uploaded.
  Batch=@{@"active":@NO,@"stage":@"stopped",@"stopReason":@"queue_rejected",@"processed":@5};
@@ -89,6 +96,7 @@ int main(void){@autoreleasepool{
  NSUInteger ends=ShortEnds;[app endBackgroundTask:open];assert(ShortEnds==ends+1&&RealTasks.count==1);
  [app endBackgroundTask:open];assert(ShortEnds==ends+1); // A repeated end is not forwarded.
  void (^expire)(void)=RealTasks.allValues.firstObject;expire();assert(hostExpired==1&&RealTasks.count==0&&ShortEnds==ends+2);
+ Foreground();
  UIBackgroundTaskIdentifier after=[app beginBackgroundTaskWithName:@"after" expirationHandler:nil];assert(after==100+RealNext); // Outside a grant: plain UIKit.
  [app endBackgroundTask:after];
  // With no background time left, a deferred task expires as UIKit would have expired it.
@@ -104,5 +112,21 @@ int main(void){@autoreleasepool{
  Reject=YES;GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"rejected"]);
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);GSFinishBackground(NO,@"test_end");
  Configured=NO;GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"foreground_only"]);GSFinishBackground(NO,@"test_end");
- NSLog(@"PASS background grant, queue drain, expiration, rejection, fallback, stale handler isolation and host task deferral");
+ // Always-on expiry guard: a task whose owner ignores expiry is ended for it, a
+ // task begun once the budget is spent is expired the same way, and the owner's
+ // own late end is not forwarded twice.
+ Foreground();
+ __block NSUInteger ignored=0;
+ UIBackgroundTaskIdentifier stuck=[app beginBackgroundTaskWithName:@"stuck" expirationHandler:^{ignored++;}];
+ void (^uikitExpiry)(void)=RealTasks[@(stuck)];uikitExpiry();assert(ignored==1&&RealTasks[@(stuck)]);
+ UIBackgroundTaskIdentifier spentTask=[app beginBackgroundTaskWithName:@"spent" expirationHandler:nil];
+ Wait(2.5);assert(!RealTasks[@(stuck)]&&!RealTasks[@(spentTask)]);
+ NSUInteger forced=ShortEnds;[app endBackgroundTask:stuck];assert(ShortEnds==forced);
+ NSDictionary *guard=GSBackgroundUploadSnapshot()[@"expiryGuard"];
+ assert([guard[@"forcedEnds"]unsignedIntegerValue]>=2&&[guard[@"lateExpired"]unsignedIntegerValue]>=1&&[guard[@"forcedCallers"]count]>=1);
+ // Returning to the foreground closes the expiry window for new tasks.
+ Foreground();
+ UIBackgroundTaskIdentifier fresh=[app beginBackgroundTaskWithName:@"fresh" expirationHandler:nil];Wait(2.5);assert(RealTasks[@(fresh)]);
+ [app endBackgroundTask:fresh];assert(!RealTasks[@(fresh)]);
+ NSLog(@"PASS background grant, queue drain, expiration, rejection, fallback, stale handler isolation, host task deferral, progress heartbeat and expiry guard");
 }}

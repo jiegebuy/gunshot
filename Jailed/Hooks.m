@@ -6,6 +6,7 @@
 #import "../UI/GSPhotosIntegration.h"
 #import "../UI/GSAccountConnection.h"
 #import "../UI/GSUploadMonitor.h"
+#import "../UI/GSBackgroundUpload.h"
 #import "SideloadKeychain.h"
 #import "SideloadIdentity.h"
 #import "SideloadAuditUpload.h"
@@ -23,6 +24,8 @@ __attribute__((constructor)) static void GSLoadJailed(void) {
  GSInstallSideloadIdentity();
  GSInstallSideloadAuditUploadGuard();
  GSInstallSideloadKeychain(); // SSO reads its Keychain mode during initialization.
+ // Before the host begins its first UIKit background task, so all are guarded.
+ if([[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleExecutable"]isEqualToString:@"GooglePhotos"])GSInstallBackgroundTaskGuard();
  // LC's guest bundle is resolved lazily on the main queue, after guest setup.
  dispatch_async(dispatch_get_main_queue(),^{
  NSString *executable=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleExecutable"];

@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 typedef NSUInteger UIBackgroundTaskIdentifier;
 static const UIBackgroundTaskIdentifier UIBackgroundTaskInvalid=NSUIntegerMax;
+static NSString *const UIApplicationDidBecomeActiveNotification=@"UIApplicationDidBecomeActiveNotification";
 @interface UIApplication : NSObject
 + (instancetype)sharedApplication;
 - (UIBackgroundTaskIdentifier)beginBackgroundTaskWithExpirationHandler:(void (^)(void))handler;
