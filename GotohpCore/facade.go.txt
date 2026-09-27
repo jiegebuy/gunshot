@@ -11,20 +11,37 @@ import (
 var ErrGunshotRemoteComponentExists = errors.New("remote Live Photo component already exists")
 
 // Read-only reconciliation: never uploads bytes or submits another commit.
-func GunshotFindUploadedHash(ctx context.Context,account string,digest []byte)(string,error){
- if len(digest)!=20{return "",errors.New("invalid content hash")}
- api,err:=NewApi(ApiOptions{Account:account});if err!=nil{return "",err}
- api.client.Transport=contextTransport{ctx,api.client.Transport}
- return api.FindRemoteMediaByHash(digest)
+func GunshotFindUploadedHash(ctx context.Context, account string, digest []byte) (string, error) {
+	if len(digest) != 20 {
+		return "", errors.New("invalid content hash")
+	}
+	api, err := NewApi(ApiOptions{Account: account})
+	if err != nil {
+		return "", err
+	}
+	api.client.Transport = contextTransport{ctx, api.client.Transport}
+	return api.FindRemoteMediaByHash(digest)
 }
 
 func gunshotCommitWait(a *Api, delay time.Duration) error {
- ctx:=context.Background()
- if transport,ok:=a.client.Transport.(contextTransport);ok{ctx=transport.ctx}
- if err:=ctx.Err();err!=nil{return err}
- if delay<=0{return nil}
- timer:=time.NewTimer(delay);defer timer.Stop()
- select{case <-ctx.Done():return ctx.Err();case <-timer.C:return nil}
+	ctx := context.Background()
+	if transport, ok := a.client.Transport.(contextTransport); ok {
+		ctx = transport.ctx
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 type contextTransport struct {
@@ -43,7 +60,19 @@ func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithCancel(r.Context())
 	stop := context.AfterFunc(t.ctx, cancel)
 	done := func() { stop(); cancel() }
-	response, err := t.base.RoundTrip(r.Clone(ctx))
+	request := r.Clone(ctx)
+	var counted *gunshotCountedBody
+	if request.Body != nil {
+		counted = &gunshotCountedBody{ReadCloser: request.Body}
+		request.Body = counted
+	}
+	started := time.Now()
+	response, err := t.base.RoundTrip(request)
+	var sent int64
+	if counted != nil {
+		sent = counted.bytes.Load()
+	}
+	gunshotRecordRequest(gunshotRequestKind(request), started, sent, response, err)
 	if err != nil || response == nil || response.Body == nil {
 		done()
 	} else {

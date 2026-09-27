@@ -22,6 +22,7 @@ type resumeServer struct {
 	cancel                  context.CancelFunc
 	badOffset               bool
 	dropFinal               bool
+	omitChunkOffset         bool
 }
 
 func (s *resumeServer) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -70,6 +71,9 @@ func (s *resumeServer) RoundTrip(r *http.Request) (*http.Response, error) {
 		s.received += n
 		h.Set("X-Goog-Upload-Status", "active")
 		h.Set("X-Goog-Upload-Size-Received", strconv.FormatInt(s.received, 10))
+		if s.omitChunkOffset {
+			h.Del("X-Goog-Upload-Size-Received")
+		}
 		if s.cancel != nil && s.chunks == 1 {
 			s.cancel()
 		}
@@ -88,6 +92,23 @@ func (s *resumeServer) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	return &http.Response{StatusCode: status, Header: h, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 }
+func TestResumableDoesNotQueryAfterEveryAcknowledgedChunk(t *testing.T) {
+	api, server, path := resumeFixture(t)
+	server.omitChunkOffset = true
+	token, err := api.gunshotGetUploadTokenForFile(context.Background(), path, "hash", server.size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = api.UploadFileWithProgress(context.Background(), path, token, nil); err != nil {
+		t.Fatal(err)
+	}
+	if server.queries != 2 {
+		t.Fatalf("successful chunks triggered extra status queries: %d", server.queries)
+	}
+	if server.received != server.size {
+		t.Fatal("bytes missing")
+	}
+}
 func TestResumableRecoversLostFinalizeResponseWithoutSendingBytesAgain(t *testing.T) {
 	api, server, path := resumeFixture(t)
 	server.dropFinal = true
@@ -99,7 +120,7 @@ func TestResumableRecoversLostFinalizeResponseWithoutSendingBytesAgain(t *testin
 	if err != nil || len(final.Raw) == 0 {
 		t.Fatal("lost finalize not recovered", err)
 	}
-	if server.chunks != int((server.size+gunshotResumeChunk-1)/gunshotResumeChunk) {
+	if server.received != server.size || server.chunks < 2 {
 		t.Fatal("retransmitted final block")
 	}
 	diagnostic, err := os.ReadFile(filepath.Join(filepath.Dir(path), ".upload-protocol-diagnostic.json"))

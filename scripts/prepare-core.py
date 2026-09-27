@@ -33,6 +33,7 @@ assert s.count('Transport: transport,') == 1
 s = s.replace('Transport: transport,', 'Transport: gunshotSharedTransport(proxyURLStr, transport),')
 p.write_text(s)
 shutil.copy2(r / 'GotohpCore/shared_transport.go.txt', d / 'backend/gunshot_shared_transport.go')
+shutil.copy2(r / 'GotohpCore/transport_metrics.go.txt', d / 'backend/gunshot_transport_metrics.go')
 (d / 'go.mod').write_text('module app\n\ngo 1.26.0\n\nrequire (\n github.com/tink-crypto/tink-go/v2 v2.8.0\n google.golang.org/protobuf v1.36.12\n)\n')
 shutil.copy2(u / 'go.sum', d / 'go.sum')
 shutil.copy2(r / 'GotohpCore/facade.go.txt', d / 'backend/gunshot_facade.go')

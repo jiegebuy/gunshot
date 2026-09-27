@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +13,32 @@ import (
 	"testing"
 	"time"
 )
+
+func TestGunshotTransportMetricsOmitSessionAndAccount(t *testing.T) {
+	request, _ := http.NewRequest("POST", "https://photos.googleapis.com/data/upload/uploadmedia/interactive?upload_id=private-session-token", strings.NewReader("private-file-bytes"))
+	request.Header.Set("Authorization", "Bearer private-access-token")
+	transport := contextTransport{context.Background(), gunshotRoundTripper(func(r *http.Request) (*http.Response, error) {
+		io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: 200, ProtoMajor: 2, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	reply, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply.Body.Close()
+	snapshot := GunshotTransportSnapshot()
+	raw, _ := json.Marshal(snapshot)
+	for _, private := range []string{"private-session-token", "private-access-token", "private-file-bytes", "upload_id"} {
+		if strings.Contains(string(raw), private) {
+			t.Fatal("sensitive data in timing diagnostic")
+		}
+	}
+	entries := snapshot["requests"].(map[string]any)
+	entry := entries["uploadBody"].(map[string]any)
+	if entry["requests"].(int64) < 1 || entry["requestBodyBytes"].(int64) < int64(len("private-file-bytes")) {
+		t.Fatal("missing request metrics")
+	}
+}
 
 func TestGunshotJobsShareConnectionsWithoutSharingClients(t *testing.T) {
 	var connections atomic.Int32

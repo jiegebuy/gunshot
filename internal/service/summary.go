@@ -1,6 +1,7 @@
 package service
 
 import (
+	"app/backend"
 	"path/filepath"
 	"strings"
 )
@@ -83,5 +84,5 @@ func (e *Engine) uploadSummary() map[string]any {
 		}
 	}
 	conditions := map[string]bool{"online": e.online, "wifi": e.wifi, "charging": e.charging, "paused": e.state.Options.Paused}
-	return map[string]any{"completionRevision": e.state.CompletionRevision, "defaultQuality": e.state.Options.Quality, "profiles": modes, "mediaTypes": media, "conditions": conditions, "serverQualityVerified": false}
+	return map[string]any{"completionRevision": e.state.CompletionRevision, "defaultQuality": e.state.Options.Quality, "profiles": modes, "mediaTypes": media, "conditions": conditions, "serverQualityVerified": false, "transport": backend.GunshotTransportSnapshot(), "configuredConcurrent": e.state.Options.Concurrent, "activeWorkers": len(e.active)}
 }

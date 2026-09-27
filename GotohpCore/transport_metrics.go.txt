@@ -1,0 +1,103 @@
+package backend
+
+import (
+	"io"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type gunshotCountedBody struct {
+	io.ReadCloser
+	bytes atomic.Int64
+}
+
+func (b *gunshotCountedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.bytes.Add(int64(n))
+	return n, err
+}
+
+type gunshotRequestMetric struct {
+	Requests, Errors, Milliseconds, BodyBytes int64
+	HTTP2                                     int64
+}
+
+var gunshotMetrics struct {
+	sync.Mutex
+	kinds             map[string]gunshotRequestMetric
+	authCalls, authMS int64
+	started           time.Time
+	recent            [60]struct{ second, bytes int64 }
+}
+
+func gunshotRequestKind(r *http.Request) string {
+	if r.Header.Get("X-Goog-Upload-Command") == "query" {
+		return "uploadQuery"
+	}
+	if r.URL.Hostname() == "photos.googleapis.com" && r.URL.Path == "/data/upload/uploadmedia/interactive" {
+		if r.URL.Query().Get("upload_id") != "" {
+			return "uploadBody"
+		}
+		return "uploadSession"
+	}
+	if r.URL.Hostname() == "photosdata-pa.googleapis.com" {
+		return "mediaRPC"
+	}
+	return "other"
+}
+func gunshotRecordRequest(kind string, started time.Time, n int64, response *http.Response, err error) {
+	gunshotMetrics.Lock()
+	defer gunshotMetrics.Unlock()
+	if gunshotMetrics.kinds == nil {
+		gunshotMetrics.kinds = map[string]gunshotRequestMetric{}
+		gunshotMetrics.started = started
+	}
+	value := gunshotMetrics.kinds[kind]
+	value.Requests++
+	value.Milliseconds += time.Since(started).Milliseconds()
+	value.BodyBytes += n
+	if err != nil || response == nil || response.StatusCode >= 400 {
+		value.Errors++
+	}
+	if response != nil && response.ProtoMajor == 2 {
+		value.HTTP2++
+	}
+	gunshotMetrics.kinds[kind] = value
+	if kind == "uploadBody" {
+		now := time.Now().Unix()
+		slot := &gunshotMetrics.recent[now%60]
+		if slot.second != now {
+			slot.second = now
+			slot.bytes = 0
+		}
+		slot.bytes += n
+	}
+}
+func gunshotRecordAuthorization(started time.Time) {
+	gunshotMetrics.Lock()
+	gunshotMetrics.authCalls++
+	gunshotMetrics.authMS += time.Since(started).Milliseconds()
+	gunshotMetrics.Unlock()
+}
+func GunshotTransportSnapshot() map[string]any {
+	gunshotMetrics.Lock()
+	defer gunshotMetrics.Unlock()
+	requests := map[string]any{}
+	for kind, value := range gunshotMetrics.kinds {
+		requests[kind] = map[string]any{"requests": value.Requests, "errors": value.Errors, "totalMs": value.Milliseconds, "meanMs": value.Milliseconds / max(1, value.Requests), "requestBodyBytes": value.BodyBytes, "http2Requests": value.HTTP2}
+	}
+	now := time.Now().Unix()
+	var sent int64
+	for _, slot := range gunshotMetrics.recent {
+		if now-slot.second < 60 {
+			sent += slot.bytes
+		}
+	}
+	seconds := 60.0
+	if !gunshotMetrics.started.IsZero() {
+		seconds = min(seconds, max(1, time.Since(gunshotMetrics.started).Seconds()))
+	}
+	return map[string]any{"requests": requests, "nativeAuthCalls": gunshotMetrics.authCalls, "nativeAuthMeanMs": gunshotMetrics.authMS / max(1, gunshotMetrics.authCalls), "recentUploadBodyBytesPerSecond": int64(float64(sent) / seconds), "windowSeconds": int64(seconds)}
+}

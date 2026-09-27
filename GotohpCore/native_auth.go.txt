@@ -1,42 +1,62 @@
 package backend
 
 import (
- "errors"
- "net/url"
- "strings"
- "sync"
+	"errors"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
 )
 
 // The embedded host or daemon relay registers a provider. Neither refresh nor access tokens
 // are serialized: the credential store contains an account binding, not a secret.
 var nativeProvider struct {
- sync.RWMutex
- get func(string) (string, error)
+	sync.RWMutex
+	get func(string) (string, error)
 }
+
 // Metadata only; never return the credential or a token to IPC callers.
 func GunshotNativeAccountID(email string) string {
- for _, credential := range currentConfig().Account.Credentials {
-  values, err := url.ParseQuery(credential)
-  if err == nil && values.Get("Email") == email { return values.Get("gunshot_native_id") }
- }
- return ""
+	for _, credential := range currentConfig().Account.Credentials {
+		values, err := url.ParseQuery(credential)
+		if err == nil && values.Get("Email") == email {
+			return values.Get("gunshot_native_id")
+		}
+	}
+	return ""
 }
-func GunshotSetNativeBearerProvider(get func(string) (string,error)) {
- nativeProvider.Lock(); defer nativeProvider.Unlock(); nativeProvider.get=get
+func GunshotSetNativeBearerProvider(get func(string) (string, error)) {
+	nativeProvider.Lock()
+	defer nativeProvider.Unlock()
+	nativeProvider.get = get
 }
 func gunshotNativeBearer(credential string) (string, bool, error) {
- values,err:=url.ParseQuery(credential)
- if err!=nil || values.Get("gunshot_native_id")=="" { return "",false,nil }
- nativeProvider.RLock(); get:=nativeProvider.get; nativeProvider.RUnlock()
- if get==nil { return "",true,errors.New("open Google Photos to authorize this account") }
- token,err:=get(values.Get("gunshot_native_id"))
- if err!=nil||token==""||len(token)>32768||strings.ContainsAny(token," \r\n\t") {return "",true,errors.New("Google Photos account authorization unavailable")}
- return token,true,nil
+	started := time.Now()
+	defer gunshotRecordAuthorization(started)
+	values, err := url.ParseQuery(credential)
+	if err != nil || values.Get("gunshot_native_id") == "" {
+		return "", false, nil
+	}
+	nativeProvider.RLock()
+	get := nativeProvider.get
+	nativeProvider.RUnlock()
+	if get == nil {
+		return "", true, errors.New("open Google Photos to authorize this account")
+	}
+	token, err := get(values.Get("gunshot_native_id"))
+	if err != nil || token == "" || len(token) > 32768 || strings.ContainsAny(token, " \r\n\t") {
+		return "", true, errors.New("Google Photos account authorization unavailable")
+	}
+	return token, true, nil
 }
 func (g *ConfigManager) AddNativeAccount(email, identifier string) error {
- if len(email)>320||!strings.Contains(email,"@")||strings.ContainsAny(email,"\r\n")||identifier==""||len(identifier)>256 {return errors.New("invalid native account")}
- credential:=url.Values{"Email":{email},"gunshot_native_id":{identifier},"lang":{"en"}}.Encode()
- // Verify the Photos endpoint accepts this iOS token before binding the account.
- if err:=validateGooglePhotosCredential(credential,"");err!=nil{return errors.New("Google Photos native account validation failed")}
- return upsertCredential(credential)
+	if len(email) > 320 || !strings.Contains(email, "@") || strings.ContainsAny(email, "\r\n") || identifier == "" || len(identifier) > 256 {
+		return errors.New("invalid native account")
+	}
+	credential := url.Values{"Email": {email}, "gunshot_native_id": {identifier}, "lang": {"en"}}.Encode()
+	// Verify the Photos endpoint accepts this iOS token before binding the account.
+	if err := validateGooglePhotosCredential(credential, ""); err != nil {
+		return errors.New("Google Photos native account validation failed")
+	}
+	return upsertCredential(credential)
 }
