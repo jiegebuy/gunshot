@@ -32,6 +32,8 @@ jobs:
           .build/batch-import-test
           clang -O2 -DGS_JAILED=1 -DGS_TEST_BACKGROUND=1 -fobjc-arc -framework Foundation tests/background_upload.m -o .build/background-upload-test
           .build/background-upload-test
+          clang -O2 -fobjc-arc -framework Foundation tests/sideload_audit_upload.m -o .build/sideload-audit-test
+          .build/sideload-audit-test
   core:
     runs-on: ubuntu-latest
     steps:
