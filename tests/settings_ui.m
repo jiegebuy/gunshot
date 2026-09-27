@@ -183,7 +183,8 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  Await(^BOOL{GSPanel *panel=Panel(root);return panel.settingsMode&&panel.viewIfLoaded.window&&[[panel.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].detailTextLabel.text isEqual:@"認証確認済み · アップロード可能"];},^{
   NSDictionary *runtime=GSEmbeddedRuntimeSnapshot();
   if(![runtime[@"conditionsAccepted"]boolValue]||!SnapshotDuringAuthorization||![runtime[@"coreReady"]boolValue]||![runtime[@"foreground"]boolValue]||![runtime[@"path"]isEqual:@"satisfied"]){Finish(NO,@"embedded runtime state or nonblocking authorization snapshot failed");return;}
-  NSSet *allowed=[NSSet setWithArray:@[@"uploadSummary",@"coreReady",@"conditionsAccepted",@"foreground",@"path",@"networkOnline",@"wifi",@"charging",@"authorization"]];
+  NSSet *allowed=[NSSet setWithArray:@[@"backgroundUpload",@"uploadSummary",@"coreReady",@"conditionsAccepted",@"foreground",@"path",@"networkOnline",@"wifi",@"charging",@"authorization"]];
+  if(![runtime[@"backgroundUpload"]isEqual:@{@"granted":@NO,@"status":@"idle"}]){Finish(NO,@"idle background task must not claim an execution grant");return;}
   if(![[NSSet setWithArray:runtime.allKeys]isSubsetOfSet:allowed]){Finish(NO,@"unexpected diagnostic fields");return;}
   GSPanel *panel=Panel(root);if([panel.tableView numberOfSections]!=8||[panel.tableView numberOfRowsInSection:6]!=3){Finish(NO,@"settings sections or appearance rows incorrect");return;}
   GSFixtureRetryPanel *retryPanel=[GSFixtureRetryPanel new];retryPanel.settingsMode=YES;
