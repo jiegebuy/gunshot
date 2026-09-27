@@ -25,7 +25,7 @@
 #define GS_ACCOUNT_HELP GSL(@"Connect or refresh your account.")
 #if GS_JAILED
 #define GS_BACKUP_HELP GSL(@"Enable Google Photos backup for automatic uploads. GoToHP controls the quality. Keep the app in the foreground.")
-#define GS_QUEUED_HELP GSL(@"Keep the app open while uploading. Pending uploads resume next time.")
+#define GS_QUEUED_HELP ([GSBackgroundUploadSnapshot()[@"granted"]boolValue]?GSL(@"Background upload is active. You can switch apps; iOS may stop the task when resources are limited."):GSL(@"Keep the app open while uploading. Pending uploads resume next time."))
 #define GS_AUTH_HELP GSL(@"Paste an EmbeddedSetup oauth_token or complete gotohp credential. Stored privately in this app, sent to Google, and hidden after saving.")
 #else
 #define GS_BACKUP_HELP GSL(@"Enable Google Photos backup for automatic uploads. GoToHP controls the quality. Keep the app open until the originals are queued; the daemon then uploads while authorization is available.")
@@ -464,6 +464,8 @@
   if([state[@"stage"]isEqual:@"waiting_storage"])help=GSL(@"Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.");
   else if([state[@"stage"]isEqual:@"waiting_upload_resume"])help=GSL(@"Preparation is waiting. Turn off Pause uploads to continue.");
   else help=GSL(@"Preparing originals. Keep the app open.");
+  if([GSBackgroundUploadSnapshot()[@"granted"]boolValue]&&![state[@"stage"]isEqual:@"waiting_upload_resume"])
+   help=[state[@"stage"]isEqual:@"waiting_storage"]?GSL(@"Waiting for uploads to free space. Background preparation will resume automatically."):GSL(@"Background upload is active. You can switch apps; iOS may stop the task when resources are limited.");
  }
  else if([reason isEqual:@"account_changed"])help=GSL(@"Preparation stopped because the account changed. Reconnect and select the remaining items.");
  else if([reason isEqual:@"queue_rejected"]||[reason isEqual:@"service_unavailable"]||[reason isEqual:@"local_storage"])help=GSL(@"Preparation stopped. Check the connection, free space and queue, then select the remaining items.");

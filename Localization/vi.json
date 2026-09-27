@@ -141,5 +141,9 @@
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
   "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
   "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu.",
-  "\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Khi thử lại, phiên đã lưu được kiểm tra trước khi gửi tiếp."
+  "\nNo upload progress for 2 minutes. The file is kept. Retry checks the saved session before sending more data.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Khi thử lại, phiên đã lưu được kiểm tra trước khi gửi tiếp.",
+  "Prepared %lu / %lu · %lu pending": "Đã chuẩn bị %lu / %lu · %lu mục chờ",
+  "Preparing uploads": "Đang chuẩn bị tải lên",
+  "Background upload is active. You can switch apps; iOS may stop the task when resources are limited.": "Đang tải lên trong nền. Bạn có thể chuyển ứng dụng; iOS có thể dừng tác vụ khi tài nguyên hạn chế.",
+  "Waiting for uploads to free space. Background preparation will resume automatically.": "Đang chờ tải lên giải phóng dung lượng. Việc chuẩn bị trong nền sẽ tự tiếp tục."
 }

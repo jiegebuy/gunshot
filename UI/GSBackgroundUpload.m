@@ -1,6 +1,7 @@
 #import "GSBackgroundUpload.h"
 #import "GSBatchImport.h"
 #import "../Shared/IPCProtocol.h"
+#import "../Shared/GSLocalization.h"
 #if GS_TEST_BACKGROUND
 #import "../tests/background_upload_shim.h"
 #else
@@ -28,13 +29,14 @@ NSString *const GSBackgroundUploadChanged=@"GoToHPBackgroundUploadChanged";
 @end
 
 static NSDictionary *GSSnapshot;
+NSDictionary *GSBackgroundUploadSnapshot(void){@synchronized(GSBackgroundUploadChanged){return GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};}}
+#if GS_JAILED
 static id<GSContinuedTask> GSTask;
 static NSString *GSIdentifier;
 static NSTimer *GSTimer;
-static UIBackgroundTaskIdentifier GSShortTask=UIBackgroundTaskInvalid;
+static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
 static BOOL GSPolling;
-NSDictionary *GSBackgroundUploadSnapshot(void){@synchronized(GSBackgroundUploadChanged){return GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};}}
 static void GSBackgroundRecord(NSDictionary *state){
  @synchronized(GSBackgroundUploadChanged){GSSnapshot=[state copy];}
  [NSNotificationCenter.defaultCenter postNotificationName:GSBackgroundUploadChanged object:nil];
@@ -66,15 +68,17 @@ static void GSPollBackground(void){
    if(GSTask){
     GSTask.progress.totalUnitCount=MAX(1,GSCount*2);
     GSTask.progress.completedUnitCount=finished?GSCount*2:MIN(GSCount*2-1,prepared+uploaded);
-    [GSTask updateTitle:@"GoToHP" subtitle:[NSString stringWithFormat:@"%lu / %lu · %lu pending",(unsigned long)prepared,(unsigned long)GSCount,(unsigned long)outstanding]];
+    [GSTask updateTitle:@"GoToHP" subtitle:[NSString stringWithFormat:GSL(@"Prepared %lu / %lu · %lu pending"),(unsigned long)prepared,(unsigned long)GSCount,(unsigned long)outstanding]];
    }
    if(finished)GSFinishBackground([batch[@"failed"]unsignedIntegerValue]==0,@"finished");
   });
  }});
 }
+#endif
 void GSBeginBackgroundUpload(NSUInteger count){
- NSCAssert(NSThread.isMainThread,@"Start a user-requested background upload on main");
 #if GS_JAILED
+ NSCAssert(NSThread.isMainThread,@"Start a user-requested background upload on main");
+ static dispatch_once_t once;dispatch_once(&once,^{GSShortTask=UIBackgroundTaskInvalid;});
  if(!count)return;
  GSFinishBackground(NO,@"replaced");GSCount=count;NSUInteger epoch=GSEpoch;
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});
@@ -100,7 +104,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
    GSBackgroundRecord(@{@"granted":@YES,@"status":@"running"});GSEndShortTask();GSPollBackground();
   }];
   if(registered){
-   id<GSContinuedRequest> request=[(id<GSContinuedRequest>)[requestClass alloc] initWithIdentifier:GSIdentifier title:@"GoToHP" subtitle:@"Preparing uploads"];
+   id<GSContinuedRequest> request=[(id<GSContinuedRequest>)[requestClass alloc] initWithIdentifier:GSIdentifier title:@"GoToHP" subtitle:GSL(@"Preparing uploads")];
    NSError *error=nil;
    BOOL accepted=[scheduler submitTaskRequest:request error:&error];
    if(!GSTask)GSBackgroundRecord(@{@"granted":@NO,@"status":accepted?@"requested":@"rejected",@"errorCode":@(error.code)});
