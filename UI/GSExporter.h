@@ -8,6 +8,10 @@ NSString *GSImportFiles(NSArray<NSURL *> *files, NSString *account, NSString *qu
 NSString *GSImportPhotoIdentifier(NSString *localIdentifier, NSString *account, NSString *quality, NSError **error);
 typedef BOOL (^GSImportAuthorizationCheck)(void);
 typedef void (^GSImportStorageProgress)(NSDictionary *status);
+// Serial preparation lanes: an equal source always uses the same lane. Each
+// iCloud original carries a fixed request latency, so a few lanes cannot keep
+// eight uploads supplied; staging storage still bounds how far they run ahead.
+#define GS_IMPORT_LANES 12
 NSString *GSImportFilesWithProgress(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,
  GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error);
 NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier, NSString *account, NSString *quality,

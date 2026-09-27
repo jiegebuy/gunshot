@@ -6,6 +6,8 @@ static NSString *Identity=@"identity-A",*Account=@"a@example.com";
 static NSUInteger Queued,Exports,Fetches,MaxFetch,LiveAssets,PeakAssets;
 static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline,LargeOriginal;
 static NSString *LastDirectory;
+// Preparation runs several workers; fixture counters must not race.
+static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}}
 @interface PHFetchResult ()
 @property(nonatomic,strong) NSArray *items;
 @end
@@ -36,7 +38,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert(NO);return nil;
 }
 NSArray *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error){
- assert(!NSThread.isMainThread);Exports++;LastDirectory=directory.path;
+ assert(!NSThread.isMainThread);Count(&Exports);LastDirectory=directory.path;
  NSURL *photo=[directory URLByAppendingPathComponent:@"original.heic"];
  [@"original" writeToURL:photo atomically:YES encoding:NSUTF8StringEncoding error:nil];
  if(SwitchDuringExport)dispatch_sync(dispatch_get_main_queue(),^{Identity=@"identity-B";});
@@ -51,10 +53,10 @@ NSString *GSImportFiles(NSArray *files,NSString *account,NSString *quality,NSDat
  assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);
  assert(date.timeIntervalSince1970==123);
  if(FailQueue)return nil;
- Queued++;for(NSURL *file in files)assert([NSFileManager.defaultManager fileExistsAtPath:file.path]);return @"job";
+ Count(&Queued);for(NSURL *file in files)assert([NSFileManager.defaultManager fileExistsAtPath:file.path]);return @"job";
 }
 NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){
- assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);Exports++;
+ assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);Count(&Exports);
  if(authorization&&!authorization())return nil;
  if(SwitchDuringExport)dispatch_sync(dispatch_get_main_queue(),^{Identity=@"identity-B";});
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
@@ -63,7 +65,7 @@ NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,
  if(LargeOriginal&&[identifier isEqual:@"large"]){if(error)*error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{@"storage":@{@"freeBytes":@123}}];return nil;}
  if(FailExport&&[identifier isEqual:@"500"]){if(error)*error=[NSError errorWithDomain:@"private filename/token must not escape" code:7 userInfo:nil];return nil;}
  if(FailQueue){if(error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:5 userInfo:nil];return nil;}
- Queued++;return @"job";
+ Count(&Queued);return @"job";
 }
 NSString *GSImportPhotoIdentifier(NSString *identifier,NSString *account,NSString *quality,NSError **error){
  return GSImportPhotoIdentifierChecked(identifier,account,quality,nil,error);

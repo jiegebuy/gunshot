@@ -105,7 +105,9 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
   NSMutableDictionary *failures=[NSMutableDictionary dictionary];
   NSTimeInterval lastUpdate=0;
   if(assets&&!reason){
-   NSUInteger workers=MIN(count,MIN(4,MAX(1,[options[@"concurrent"]unsignedIntegerValue])));
+   // Preparation must outpace uploads: 1.5 workers per upload slot, at least 4.
+   NSUInteger concurrent=MAX((NSUInteger)1,[options[@"concurrent"]unsignedIntegerValue]);
+   NSUInteger workers=MIN(count,MIN((NSUInteger)GS_IMPORT_LANES,MAX((NSUInteger)4,concurrent+concurrent/2)));
    reason=GSPreparePhotos(batch,count,workers,provider,quality,state,progress);
   }
   for(NSUInteger index=0;!assets&&index<count&&!reason;index++){@autoreleasepool{

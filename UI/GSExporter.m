@@ -148,13 +148,13 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
  if(!localIdentifier.length||!account.length){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:3 userInfo:nil];return nil;}
  // Equal sources use the same lane for lookup/export/seal, including native
  // callbacks. Other lanes can prepare photos while one waits for iCloud.
- static dispatch_queue_t imports[4],staging;static dispatch_once_t once;
+ static dispatch_queue_t imports[GS_IMPORT_LANES],staging;static dispatch_once_t once;
  dispatch_once(&once,^{
-  for(NSUInteger i=0;i<4;i++)imports[i]=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);
+  for(NSUInteger i=0;i<GS_IMPORT_LANES;i++)imports[i]=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);
   staging=dispatch_queue_create("dev.tqmane.gunshot.asset-staging",DISPATCH_QUEUE_SERIAL);
  });
  __block NSString *job=nil;__block NSError *failure=nil;
- dispatch_sync(imports[localIdentifier.hash%4],^{@autoreleasepool{
+ dispatch_sync(imports[localIdentifier.hash%GS_IMPORT_LANES],^{@autoreleasepool{
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
   NSDictionary *existing=GSRequest(@{@"op":@"source_lookup",@"account":account,@"quality":quality?:@"original",@"sourceID":localIdentifier},&failure);
   if(existing&&[existing[@"found"]boolValue]){

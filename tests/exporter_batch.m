@@ -72,7 +72,7 @@ static NSData *OriginalBytes(BOOL movie){
 - (void)cancelDataRequest:(PHAssetResourceDataRequestID)requestID{assert(requestID==1);CloudCancelled++;atomic_store(&CloudCancel,1);}
 - (PHAssetResourceDataRequestID)requestDataForAssetResource:(PHAssetResource *)resource options:(PHAssetResourceRequestOptions *)options dataReceivedHandler:(void (^)(NSData *))handler completionHandler:(void (^)(NSError *))completion{
  assert(!NSThread.isMainThread&&options.networkAccessAllowed);
- int active=atomic_fetch_add(&ActiveExports,1)+1;if(active>atomic_load(&PeakExports))atomic_store(&PeakExports,active);assert(active<=4);
+ int active=atomic_fetch_add(&ActiveExports,1)+1;if(active>atomic_load(&PeakExports))atomic_store(&PeakExports,active);assert(active<=GS_IMPORT_LANES);
  atomic_store(&CloudCancel,0);BOOL unreadable=resource.unreadable;
  NSData *bytes=OriginalBytes(resource.type==PHAssetResourceTypePairedVideo);Written++;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
@@ -175,7 +175,7 @@ int main(void){@autoreleasepool{
   [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
- assert(atomic_load(&PeakExports)>1&&atomic_load(&PeakExports)<=4);
+ assert(atomic_load(&PeakExports)>1&&atomic_load(&PeakExports)<=GS_IMPORT_LANES);
  NSUInteger beforeDuplicates=Written;
  for(NSUInteger i=0;i<12;i++)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   assert(GSImportPhotoIdentifier(@"same-source",@"fixture@example.com",@"original",nil));
