@@ -38,6 +38,20 @@ func TestGunshotTransportMetricsOmitSessionAndAccount(t *testing.T) {
 	if entry["requests"].(int64) < 1 || entry["requestBodyBytes"].(int64) < int64(len("private-file-bytes")) {
 		t.Fatal("missing request metrics")
 	}
+	if entry["outcomes"].(map[string]int64)["200"] < 1 {
+		t.Fatal("missing request outcome")
+	}
+}
+
+func TestGunshotRequestOutcomeClasses(t *testing.T) {
+	for want, err := range map[string]error{"canceled": context.Canceled, "timeout": context.DeadlineExceeded, "eof": io.ErrUnexpectedEOF, "error": errors.New("tls")} {
+		if got := gunshotRequestOutcome(nil, err); got != want {
+			t.Fatalf("%v classified as %s, want %s", err, got, want)
+		}
+	}
+	if got := gunshotRequestOutcome(&http.Response{StatusCode: 503}, nil); got != "503" {
+		t.Fatal(got)
+	}
 }
 
 func TestGunshotJobsShareConnectionsWithoutSharingClients(t *testing.T) {

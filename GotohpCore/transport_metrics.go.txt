@@ -1,10 +1,15 @@
 package backend
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +27,7 @@ func (b *gunshotCountedBody) Read(p []byte) (int, error) {
 type gunshotRequestMetric struct {
 	Requests, Errors, Milliseconds, BodyBytes int64
 	HTTP2                                     int64
+	Outcomes                                  map[string]int64 // status code or error class
 }
 
 var gunshotMetrics struct {
@@ -47,6 +53,24 @@ func gunshotRequestKind(r *http.Request) string {
 	}
 	return "other"
 }
+
+// gunshotRequestOutcome names why a request ended without URLs or payloads.
+func gunshotRequestOutcome(response *http.Response, err error) string {
+	switch {
+	case err == nil && response != nil:
+		return strconv.Itoa(response.StatusCode)
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
+		return "timeout"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "reset"
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+		return "eof"
+	default:
+		return "error"
+	}
+}
 func gunshotRecordRequest(kind string, started time.Time, n int64, response *http.Response, err error) {
 	gunshotMetrics.Lock()
 	defer gunshotMetrics.Unlock()
@@ -61,6 +85,10 @@ func gunshotRecordRequest(kind string, started time.Time, n int64, response *htt
 	if err != nil || response == nil || response.StatusCode >= 400 {
 		value.Errors++
 	}
+	if value.Outcomes == nil {
+		value.Outcomes = map[string]int64{}
+	}
+	value.Outcomes[gunshotRequestOutcome(response, err)]++
 	if response != nil && response.ProtoMajor == 2 {
 		value.HTTP2++
 	}
@@ -86,7 +114,11 @@ func GunshotTransportSnapshot() map[string]any {
 	defer gunshotMetrics.Unlock()
 	requests := map[string]any{}
 	for kind, value := range gunshotMetrics.kinds {
-		requests[kind] = map[string]any{"requests": value.Requests, "errors": value.Errors, "totalMs": value.Milliseconds, "meanMs": value.Milliseconds / max(1, value.Requests), "requestBodyBytes": value.BodyBytes, "http2Requests": value.HTTP2}
+		outcomes := map[string]int64{}
+		for outcome, count := range value.Outcomes {
+			outcomes[outcome] = count
+		}
+		requests[kind] = map[string]any{"requests": value.Requests, "errors": value.Errors, "totalMs": value.Milliseconds, "meanMs": value.Milliseconds / max(1, value.Requests), "requestBodyBytes": value.BodyBytes, "http2Requests": value.HTTP2, "outcomes": outcomes}
 	}
 	now := time.Now().Unix()
 	var sent int64
