@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 #endif
 #include <dlfcn.h>
+#include <objc/runtime.h>
 
 NSString *const GSBackgroundUploadChanged=@"GoToHPBackgroundUploadChanged";
 // Runtime binding keeps the tweak usable on iOS 15 and older build SDKs.
@@ -29,7 +30,6 @@ NSString *const GSBackgroundUploadChanged=@"GoToHPBackgroundUploadChanged";
 @end
 
 static NSDictionary *GSSnapshot;
-NSDictionary *GSBackgroundUploadSnapshot(void){@synchronized(GSBackgroundUploadChanged){return GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};}}
 #if GS_JAILED
 static id<GSContinuedTask> GSTask;
 static NSString *GSIdentifier;
@@ -37,6 +37,80 @@ static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
 static BOOL GSPolling;
+// Google Photos begins UIKit background tasks continuously while it runs. Once
+// our continued-processing grant keeps a backgrounded process alive, they draw
+// on the ~30 s FinishTask budget; a task begun after it is spent must end
+// within seconds or RunningBoard kills the whole process (0x2182BAD2, "Shared
+// Background Assertion"), leaving no crash report. dasd already holds the
+// process during the grant, so account begin/end locally, then hand tasks that
+// are still open back to UIKit when the grant ends, restoring their expiry.
+static const UIBackgroundTaskIdentifier GSDeferredBase=(UIBackgroundTaskIdentifier)1<<40;
+static NSObject *GSDeferredLock;
+static BOOL GSDeferring;
+static NSMutableDictionary<NSNumber *,NSArray *> *GSDeferred; // local ID -> @[name, handler]
+static NSMutableDictionary<NSNumber *,NSNumber *> *GSHandedBack; // local ID -> UIKit ID
+static NSUInteger GSDeferredNext,GSDeferredTotal,GSHandedBackTotal;
+static UIBackgroundTaskIdentifier (*GSOriginalBeginNamed)(id,SEL,NSString *,void (^)(void));
+static UIBackgroundTaskIdentifier (*GSOriginalBegin)(id,SEL,void (^)(void));
+static void (*GSOriginalEnd)(id,SEL,UIBackgroundTaskIdentifier);
+static UIBackgroundTaskIdentifier GSDeferTask(NSString *name,void (^handler)(void)){
+ // Caller holds GSDeferredLock.
+ UIBackgroundTaskIdentifier local=GSDeferredBase+(++GSDeferredNext);GSDeferredTotal++;
+ GSDeferred[@(local)]=@[name?:(id)NSNull.null,handler?[handler copy]:(id)NSNull.null];
+ return local;
+}
+static UIBackgroundTaskIdentifier GSBeginNamed(id app,SEL selector,NSString *name,void (^handler)(void)){
+ @synchronized(GSDeferredLock){if(GSDeferring)return GSDeferTask(name,handler);}
+ return GSOriginalBeginNamed(app,selector,name,handler);
+}
+static UIBackgroundTaskIdentifier GSBegin(id app,SEL selector,void (^handler)(void)){
+ @synchronized(GSDeferredLock){if(GSDeferring)return GSDeferTask(nil,handler);}
+ return GSOriginalBegin(app,selector,handler);
+}
+static void GSEnd(id app,SEL selector,UIBackgroundTaskIdentifier identifier){
+ if(identifier>=GSDeferredBase&&identifier!=UIBackgroundTaskInvalid){
+  NSNumber *handed=nil;
+  @synchronized(GSDeferredLock){
+   if(GSDeferred[@(identifier)]){[GSDeferred removeObjectForKey:@(identifier)];return;}
+   handed=GSHandedBack[@(identifier)];[GSHandedBack removeObjectForKey:@(identifier)];
+  }
+  if(!handed)return; // Already ended; UIKit likewise ignores a stale identifier.
+  identifier=handed.unsignedIntegerValue;
+ }
+ GSOriginalEnd(app,selector,identifier);
+}
+static BOOL GSInstallDeferredTasks(void){
+ static BOOL installed;static dispatch_once_t once;
+ dispatch_once(&once,^{
+  Class app=UIApplication.class;
+  Method named=class_getInstanceMethod(app,@selector(beginBackgroundTaskWithName:expirationHandler:));
+  Method plain=class_getInstanceMethod(app,@selector(beginBackgroundTaskWithExpirationHandler:));
+  Method end=class_getInstanceMethod(app,@selector(endBackgroundTask:));
+  if(!named||!plain||!end)return;
+  GSDeferredLock=[NSObject new];GSDeferred=[NSMutableDictionary dictionary];GSHandedBack=[NSMutableDictionary dictionary];
+  GSOriginalEnd=(void *)method_setImplementation(end,(IMP)GSEnd);
+  GSOriginalBeginNamed=(void *)method_setImplementation(named,(IMP)GSBeginNamed);
+  GSOriginalBegin=(void *)method_setImplementation(plain,(IMP)GSBegin);
+  installed=YES;
+ });
+ return installed;
+}
+static void GSStopDeferringTasks(void){
+ if(!GSDeferredLock)return;
+ // Held under the (recursive) lock so an end racing the hand-back is never lost.
+ @synchronized(GSDeferredLock){
+  GSDeferring=NO;
+  for(NSNumber *local in GSDeferred.allKeys){
+   NSArray *task=GSDeferred[local];
+   NSString *name=task[0]==NSNull.null?nil:task[0];
+   void (^handler)(void)=task[1]==NSNull.null?nil:task[1];
+   UIBackgroundTaskIdentifier real=GSOriginalBeginNamed(UIApplication.sharedApplication,@selector(beginBackgroundTaskWithName:expirationHandler:),name,handler);
+   if(real!=UIBackgroundTaskInvalid){GSHandedBack[local]=@(real);GSHandedBackTotal++;}
+   else if(handler)dispatch_async(dispatch_get_main_queue(),handler); // No time left: expire as UIKit would.
+  }
+  [GSDeferred removeAllObjects];
+ }
+}
 static void GSBackgroundRecord(NSDictionary *state){
  @synchronized(GSBackgroundUploadChanged){GSSnapshot=[state copy];}
  [NSNotificationCenter.defaultCenter postNotificationName:GSBackgroundUploadChanged object:nil];
@@ -47,6 +121,7 @@ static void GSFinishBackground(BOOL success,NSString *status){
  id<GSContinuedTask> task=GSTask;GSTask=nil;
  if(GSIdentifier)[[NSClassFromString(@"BGTaskScheduler") sharedScheduler] cancelTaskRequestWithIdentifier:GSIdentifier];
  GSIdentifier=nil;GSBackgroundRecord(@{@"granted":@NO,@"status":status});
+ GSStopDeferringTasks(); // Before completing: UIKit must hold them before dasd releases the process.
  if(task){task.expirationHandler=nil;[task setTaskCompletedWithSuccess:success];}
  GSEndShortTask();
 }
@@ -97,10 +172,12 @@ void GSBeginBackgroundUpload(NSUInteger count){
  NSString *prefix=[NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".gotohp.upload"];
  NSArray *permitted=[NSBundle.mainBundle objectForInfoDictionaryKey:@"BGTaskSchedulerPermittedIdentifiers"];
  if(requestClass&&[permitted containsObject:[prefix stringByAppendingString:@".*"]]){
+  BOOL deferrable=GSInstallDeferredTasks();
   GSIdentifier=[prefix stringByAppendingFormat:@".%@",NSUUID.UUID.UUIDString];
   BOOL registered=[scheduler registerForTaskWithIdentifier:GSIdentifier usingQueue:dispatch_get_main_queue() launchHandler:^(id<GSContinuedTask> task){
    if(epoch!=GSEpoch){[task setTaskCompletedWithSuccess:NO];return;}
    GSTask=task;
+   if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;}
    task.expirationHandler=^{dispatch_async(dispatch_get_main_queue(),^{
     if(epoch!=GSEpoch)return;
     GSStopBatchImport(YES);GSFinishBackground(NO,@"expired");
@@ -116,4 +193,18 @@ void GSBeginBackgroundUpload(NSUInteger count){
  }
  GSTimer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){GSPollBackground();}];
 #endif
+}
+NSDictionary *GSBackgroundUploadSnapshot(void){
+ NSDictionary *snapshot;
+ @synchronized(GSBackgroundUploadChanged){snapshot=GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};}
+#if GS_JAILED
+ if(GSDeferredLock)@synchronized(GSDeferredLock){
+  if(GSDeferredTotal){
+   NSMutableDictionary *merged=[snapshot mutableCopy];
+   merged[@"deferredTasks"]=@{@"begun":@(GSDeferredTotal),@"open":@(GSDeferred.count),@"handedBack":@(GSHandedBackTotal),@"handedBackOpen":@(GSHandedBack.count)};
+   snapshot=merged;
+  }
+ }
+#endif
+ return snapshot;
 }
