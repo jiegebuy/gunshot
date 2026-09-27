@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"syscall"
 )
 
 // Native code supplies identity from the kernel audit trailer, never JSON.
@@ -42,7 +43,18 @@ func (e *Engine) HandleJSON(b []byte, role string) []byte {
 func response(data any, err error) []byte {
 	var v any
 	if err != nil {
-		v = map[string]any{"ok": false, "error": "operation_failed"}
+		code := "operation_failed"
+		switch {
+		case errors.Is(err, errRequest):
+			code = "invalid_request"
+		case errors.Is(err, syscall.ENOSPC):
+			code = "storage_full"
+		case errors.Is(err, os.ErrPermission):
+			code = "storage_permission"
+		case errors.Is(err, os.ErrNotExist):
+			code = "storage_missing"
+		}
+		v = map[string]any{"ok": false, "error": code}
 	} else {
 		v = map[string]any{"ok": true, "data": data}
 	}

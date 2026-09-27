@@ -118,11 +118,17 @@
 }
 - (void)message:(NSString *)message{
  BOOL changed=![self.statusText isEqual:message]||![self.statusLanguage isEqual:GSLanguage()];
- self.statusText=message;self.statusLanguage=GSLanguage();if(changed&&!self.presentedViewController&&![self isInteractingWithTable])[self reloadTablePreservingPosition];
+ self.statusText=message;self.statusLanguage=GSLanguage();
+ if(changed&&!self.presentedViewController&&![self isInteractingWithTable]&&self.view.window){
+  // Preparation reports used to rebuild every history row four times a second.
+  // Update the status cell only; the periodic refresh handles structure changes.
+  UITableViewCell *cell=[self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+  cell.detailTextLabel.text=GSLocalizedStatus(self.statusText,self.statusLanguage);
+ }
 }
 - (void)refresh{
  // Presented sheets keep their popover anchor; reloading the table under them can drop the source view (issue #50).
- if((self.busy&&!self.preparingBatch)||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
+ if(UIApplication.sharedApplication.applicationState==UIApplicationStateBackground||(self.busy&&!self.preparingBatch)||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
  NSUInteger generation=self.stateGeneration;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
  NSError *error=nil;NSDictionary *accounts=GSRequest(@{@"op":@"accounts"},&error);NSDictionary *options=accounts?GSRequest(@{@"op":@"options"},&error):nil;

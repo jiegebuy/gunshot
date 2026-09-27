@@ -124,6 +124,7 @@ type Engine struct {
 	commitTimeout           time.Duration // zero uses the production five-minute limit
 	uploadIdleTimeout       time.Duration // zero uses two minutes without byte progress
 	smallJobBurst           int
+	wake                    chan struct{}
 }
 
 var errRequest = errors.New("invalid request")
@@ -191,7 +192,7 @@ func Open(root string, runner Runner) (*Engine, error) {
 	if err := bootstrapFingerprintReceipts(root, fingerprintReceipts, fingerprintReceiptsByID, s.Jobs); err != nil {
 		return nil, err
 	}
-	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, fingerprintReceipts: fingerprintReceipts, fingerprintReceiptsByID: fingerprintReceiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner}
+	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, fingerprintReceipts: fingerprintReceipts, fingerprintReceiptsByID: fingerprintReceiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner, wake: make(chan struct{}, 1)}
 	for _, j := range s.Jobs {
 		en.jobsByID[j.ID] = j
 		switch j.State {
@@ -258,7 +259,18 @@ func (e *Engine) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			e.Tick()
+		case <-e.wake:
+			e.Tick()
 		}
+	}
+}
+
+// Coalesce queue changes. The timer remains for delayed retries, but a sealed
+// photo or newly freed slot need not sit idle until the next one-second tick.
+func (e *Engine) signalWork() {
+	select {
+	case e.wake <- struct{}{}:
+	default:
 	}
 }
 

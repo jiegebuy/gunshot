@@ -63,7 +63,8 @@ static void GSPollBackground(void){
    outstanding+=[profile[@"states"][key]unsignedIntegerValue];
   dispatch_async(dispatch_get_main_queue(),^{
    GSPolling=NO;if(epoch!=GSEpoch)return;
-   if([batch[@"stage"]isEqual:@"stopped"]||[summary[@"conditions"][@"paused"]boolValue]){GSFinishBackground(NO,@"stopped");return;}
+   NSString *reason=batch[@"stopReason"];
+   if([reason isEqual:@"account_changed"]||[reason isEqual:@"background_expired"]||[summary[@"conditions"][@"paused"]boolValue]){GSFinishBackground(NO,@"stopped");return;}
    if(!summary)return; // An unavailable service is never treated as completion.
    BOOL finished=![batch[@"active"]boolValue]&&outstanding==0;
    NSUInteger prepared=MIN(GSCount,[batch[@"processed"]unsignedIntegerValue]);

@@ -407,6 +407,7 @@ func (e *Engine) seal(j *Job) (any, error) {
 	if err := e.save(); err != nil {
 		return nil, err
 	}
+	e.signalWork()
 	return map[string]any{"id": j.ID}, nil
 }
 func (j *Job) resetRetry() {
@@ -472,6 +473,7 @@ func (e *Engine) Tick() {
 }
 func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	defer e.wg.Done()
+	defer e.signalWork()
 	ctx, cancelCommit := context.WithCancel(ctx)
 	defer cancelCommit()
 	watch := &uploadWatch{}

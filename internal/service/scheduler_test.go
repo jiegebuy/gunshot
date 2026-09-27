@@ -79,3 +79,21 @@ func TestSchedulerFillsConfiguredSlotsAndHonorsPause(t *testing.T) {
 		t.Fatal("unbounded concurrency")
 	}
 }
+
+func TestSchedulerWakesOnSealAndCompletedUpload(t *testing.T) {
+	e := newEngine(t, func(context.Context, []string, string, string, func(Progress)) (string, error) { return "media", nil })
+	importTest(t, e, "original")
+	select {
+	case <-e.wake:
+	default:
+		t.Fatal("seal did not notify the scheduler")
+	}
+	e.online, e.wifi = true, true
+	e.Tick()
+	waitIdle(t, e)
+	select {
+	case <-e.wake:
+	default:
+		t.Fatal("completed upload did not notify the scheduler")
+	}
+}

@@ -38,7 +38,7 @@ static NSDictionary *GSCall(NSDictionary *request,const char *role) {
  if(![parsed isKindOfClass:NSDictionary.class]||![parsed[@"ok"]boolValue]){
   // Only record protocol error codes, never request bodies or photo contents.
   NSString *code=[parsed isKindOfClass:NSDictionary.class]?parsed[@"error"]:nil;
-  if(![@[@"invalid_request",@"unauthorized",@"internal_error",@"not_initialized"]containsObject:code?:@""])code=@"request_failed";
+  if(![@[@"invalid_request",@"unauthorized",@"internal_error",@"not_initialized",@"storage_full",@"storage_permission",@"storage_missing"]containsObject:code?:@""])code=@"request_failed";
   GSRecord(@{@"lastRequestFailure":@{@"op":request[@"op"]?:@"unknown",@"code":code}});return nil;
  }
  return parsed[@"data"]==NSNull.null?@{}:parsed[@"data"];

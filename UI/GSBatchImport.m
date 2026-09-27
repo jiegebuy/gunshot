@@ -48,21 +48,28 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
     state[@"stage"]=@"exporting";GSRecordBatch(state);
    }
    NSString *reason=GSCheckBatchAccount(batch);NSError *error=nil;NSString *job=nil;
-   if(!reason&&[item isKindOfClass:NSString.class])job=GSImportPhotoIdentifierWithProgress(item,batch.account,quality,
+   for(NSUInteger attempt=0;attempt<3&&!reason&&[item isKindOfClass:NSString.class];attempt++){
+    error=nil;job=GSImportPhotoIdentifierWithProgress(item,batch.account,quality,
     ^BOOL{return GSCheckBatchAccount(batch)==nil;},^(NSDictionary *storage){
      @synchronized(lock){[state addEntriesFromDictionary:storage];GSRecordBatch(state);}
     },&error);
+    if(job||![error.domain isEqual:@"Gunshot.IPC"])break;
+    reason=GSCheckBatchAccount(batch);
+    if(!reason)[NSThread sleepForTimeInterval:0.2*(attempt+1)];
+   }
    if(!reason)reason=GSCheckBatchAccount(batch);
    @synchronized(lock){
     active--;state[@"activePreparations"]=@(active);
     if(reason){if(!batch.stopReason)batch.stopReason=reason;}
-    else if(!job&&[error.domain isEqual:@"Gunshot.IPC"]){batch.stopReason=@"queue_rejected";}
+    // Repeated failure isolated to this asset is recorded and remains retryable.
+    // Account/service failures above still stop the batch, rather than skipping
+    // the rest of the library when the service is unavailable.
     else {
      state[@"processed"]=@([state[@"processed"]unsignedIntegerValue]+1);
      NSString *key=job?@"queued":@"failed";state[key]=@([state[key]unsignedIntegerValue]+1);
      if(!job){
       BOOL space=[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
-      NSString *code=!item?@"inaccessible":space?@"storage_deferred":@"export_failed";
+      NSString *code=!item?@"inaccessible":space?@"storage_deferred":[error.domain isEqual:@"Gunshot.IPC"]?@"queue_rejected":@"export_failed";
       failures[code]=@([failures[code]unsignedIntegerValue]+1);
       if(space){state[@"storageDeferred"]=failures[code];state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};}
      }

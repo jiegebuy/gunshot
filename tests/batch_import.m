@@ -94,7 +94,7 @@ int main(void){@autoreleasepool{
  NSString *json=[[NSString alloc]initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil]encoding:NSUTF8StringEncoding];
  assert(![json containsString:@"identity-A"]&&![json containsString:@"example.com"]&&![json containsString:@"original.heic"]&&![json containsString:@"private filename"]);
  FailExport=NO;FailQueue=YES;NSUInteger before=Queued;result=Run(@[@"0",@"1"]);
- assert(Queued==before&&[result[@"stopReason"]isEqual:@"queue_rejected"]&&[result[@"remaining"]intValue]==2);
+ assert(Queued==before&&[result[@"stage"]isEqual:@"finished"]&&[result[@"failed"]intValue]==2&&[result[@"failureCodes"][@"queue_rejected"]intValue]==2);
  FailQueue=NO;SwitchDuringExport=YES;result=Run(@[@"0",@"1"]);
  assert(Queued==before&&[result[@"stopReason"]isEqual:@"account_changed"]);
  SwitchDuringExport=NO;Identity=@"identity-A";CancelDuringExport=YES;result=Run(@[@"0",@"1"]);
