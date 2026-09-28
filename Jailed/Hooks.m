@@ -10,6 +10,7 @@
 #import "SideloadKeychain.h"
 #import "SideloadIdentity.h"
 #import "SideloadAuditUpload.h"
+#import "SnapshotGuard.h"
 
 // Independent Objective-C hooks: no Substrate / ElleKit dependency for IPA injection.
 static id (*GSOriginalActivityInit)(id, SEL, NSArray *, NSArray *);
@@ -30,6 +31,7 @@ __attribute__((constructor)) static void GSLoadJailed(void) {
  dispatch_async(dispatch_get_main_queue(),^{
  NSString *executable=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
  if(![executable isEqualToString:@"GooglePhotos"])return;
+ GSInstallSnapshotGuard();
  GSStartAccountConnection();
  [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){GSResumeAccountConnection();}];
  GSInstallAccountMenu();GSStartBackupIntegration();
