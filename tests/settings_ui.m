@@ -21,8 +21,17 @@ static atomic_int FixtureConcurrent=2;
 @interface GSPanel (GSFixturePolling)
 - (void)refresh;
 - (void)reloadTablePreservingPosition;
+- (void)refreshRowsFromJobs:(NSArray *)previousJobs statusChanged:(BOOL)statusChanged;
 - (void)chooseValueForControl:(NSInteger)control;
 - (void)sheet:(UIAlertController *)sheet;
+@end
+@interface GSFixtureTable : UITableView
+@property(nonatomic) NSUInteger fullReloads;
+@property(nonatomic) NSUInteger forcedLayouts;
+@end
+@implementation GSFixtureTable
+- (void)reloadData{self.fullReloads++;[super reloadData];}
+- (void)layoutIfNeeded{self.forcedLayouts++;[super layoutIfNeeded];}
 @end
 @interface GSFixtureRetryPanel : GSPanel
 @property(nonatomic,strong) UIAlertController *valueSheet;
@@ -150,6 +159,29 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   },[NSDate dateWithTimeIntervalSinceNow:5]);
  });
 }
+static BOOL CheckLargeHistoryRefresh(void){
+ GSPanel *panel=[[GSPanel alloc]initWithStyle:UITableViewStyleInsetGrouped];
+ [panel loadViewIfNeeded];[panel setValue:@YES forKey:@"busy"];
+ GSFixtureTable *table=[[GSFixtureTable alloc]initWithFrame:CGRectMake(0,0,768,1024) style:UITableViewStyleInsetGrouped];
+ panel.tableView=table;table.dataSource=panel;table.delegate=panel;
+ table.rowHeight=UITableViewAutomaticDimension;table.estimatedRowHeight=72;
+ NSMutableArray *jobs=[NSMutableArray array];
+ for(NSUInteger i=0;i<10000;i++)[jobs addObject:@{@"id":@(i),@"state":@"uploading",@"quality":@"original",@"uploaded":@0,@"total":@1000000,@"resources":@[@{@"name":@"Fixture photo"}]}];
+ [panel setValue:jobs forKey:@"jobs"];[panel viewWillAppear:NO];[table layoutIfNeeded];
+ NSUInteger reloads=table.fullReloads,layouts=table.forcedLayouts;
+ [panel viewWillAppear:NO];
+ if(table.fullReloads!=reloads||table.forcedLayouts!=layouts)return NO;
+ NSIndexPath *control=[NSIndexPath indexPathForRow:0 inSection:1],*upload=[NSIndexPath indexPathForRow:0 inSection:2];
+ UITableViewCell *original=[table cellForRowAtIndexPath:control];
+ NSString *before=[table cellForRowAtIndexPath:upload].detailTextLabel.text;
+ if(!original||!before)return NO;
+ NSMutableArray *updated=[jobs mutableCopy];NSMutableDictionary *job=[jobs[0] mutableCopy];job[@"uploaded"]=@500000;updated[0]=job;
+ [panel setValue:updated forKey:@"jobs"];[panel setValue:@"Uploading fixture" forKey:@"statusText"];
+ [panel refreshRowsFromJobs:jobs statusChanged:YES];[table layoutIfNeeded];
+ return table.fullReloads==reloads&&[table cellForRowAtIndexPath:control]==original&&
+  ![[table cellForRowAtIndexPath:upload].detailTextLabel.text isEqual:before]&&
+  [[table cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].detailTextLabel.text isEqual:@"Uploading fixture"];
+}
 #include "photos_glass_fixture.h"
 @interface GSFixtureScene : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic,strong) UIWindow *window;
@@ -187,6 +219,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   if(![runtime[@"backgroundUpload"]isEqual:@{@"granted":@NO,@"status":@"idle"}]){Finish(NO,@"idle background task must not claim an execution grant");return;}
   if(![[NSSet setWithArray:runtime.allKeys]isSubsetOfSet:allowed]){Finish(NO,@"unexpected diagnostic fields");return;}
   GSPanel *panel=Panel(root);if([panel.tableView numberOfSections]!=8||[panel.tableView numberOfRowsInSection:6]!=3){Finish(NO,@"settings sections or appearance rows incorrect");return;}
+  if(!CheckLargeHistoryRefresh()){Finish(NO,@"large history progress rebuilt the table, lost controls, or appearance forced layout");return;}
   GSFixtureRetryPanel *retryPanel=[GSFixtureRetryPanel new];retryPanel.settingsMode=YES;
   [retryPanel setValue:[@{@"retries":@7,@"concurrent":@2,@"quality":@"original"}mutableCopy] forKey:@"options"];
   retryPanel.view.frame=CGRectMake(0,0,390,844);

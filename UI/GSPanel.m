@@ -46,6 +46,7 @@
 @property(nonatomic,copy) void (^activityCompletion)(void);
 @property(nonatomic,copy) NSString *statusText;
 @property(nonatomic,copy) NSString *statusLanguage;
+@property(nonatomic,copy) NSString *displayLanguage;
 @property(nonatomic,strong) NSIndexPath *sheetSourcePath;
 @end
 @implementation GSPanel
@@ -70,7 +71,12 @@
  self.navigationController.navigationBar.tintColor=self.tableView.tintColor;
  [self refresh];
 }
-- (void)viewWillAppear:(BOOL)animated{[super viewWillAppear:animated];[self updateNavigationLabels];[self reloadTablePreservingPosition];}
+- (void)viewWillAppear:(BOOL)animated{
+ [super viewWillAppear:animated];[self updateNavigationLabels];
+ // UIKit is already laying out the presentation. Do not force a second layout
+ // of the entire history inside that transition, especially on a warm iPad.
+ if(![self.displayLanguage isEqual:GSLanguage()]){self.displayLanguage=GSLanguage();[self.tableView reloadData];}
+}
 - (void)updateNavigationLabels{
  self.navigationItem.leftBarButtonItem.title=GSL(@"Done");
  self.navigationItem.rightBarButtonItem.title=self.settingsMode?GSL(@"Reconnect"):GSL(@"Add");
@@ -116,6 +122,17 @@
   [table setContentOffset:CGPointMake(offset.x,MIN(MAX(offset.y,minimum),maximum)) animated:NO];
  }];
 }
+- (void)refreshRowsFromJobs:(NSArray *)previousJobs statusChanged:(BOOL)statusChanged{
+ NSMutableArray *paths=[NSMutableArray array];
+ NSInteger section=self.queueSection;
+ // Offscreen cells read the latest model when UIKit displays them. Byte progress
+ // must not invalidate the heights and cells of every completed upload.
+ for(NSIndexPath *path in self.tableView.indexPathsForVisibleRows){
+  if(path.section==0&&statusChanged)[paths addObject:path];
+  else if(path.section==section&&path.row<self.jobs.count&&path.row<previousJobs.count&&![self.jobs[path.row] isEqual:previousJobs[path.row]])[paths addObject:path];
+ }
+ if(paths.count)[UIView performWithoutAnimation:^{[self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationNone];}];
+}
 - (void)message:(NSString *)message{
  BOOL changed=![self.statusText isEqual:message]||![self.statusLanguage isEqual:GSLanguage()];
  self.statusText=message;self.statusLanguage=GSLanguage();
@@ -139,7 +156,8 @@
  // Do not change the data source count or invalidate self-sizing rows mid-scroll.
  if([self isInteractingWithTable])return;
  if(generation!=self.stateGeneration){[self refresh];return;}if(error){[self message:error.localizedDescription];return;}
- BOOL changed=![self.accounts isEqual:accounts]||![self.options isEqual:options]||![self.jobs isEqual:jobs];
+ NSArray *previousJobs=self.jobs;
+ BOOL structureChanged=![self.accounts isEqual:accounts]||![self.options isEqual:options]||previousJobs.count!=jobs.count;
  NSString *previousStatus=self.statusText,*previousLanguage=self.statusLanguage;
  self.accounts=accounts;self.options=[options mutableCopy];self.jobs=jobs;
  NSString *readiness=GSL(@"Ready to upload");
@@ -165,7 +183,10 @@
  self.statusText=[accounts[@"selected"]length]?[NSString stringWithFormat:@"%@ · %@",authorization,readiness]:GSL(@"Connect an account to continue");
  NSString *importError=GSNativeRoutingSnapshot()[@"lastError"];if(importError)self.statusText=importError;self.statusLanguage=GSLanguage();
  NSDictionary *batch=GSBatchImportSnapshot();if([batch[@"total"]unsignedIntegerValue])self.statusText=[self.statusText stringByAppendingFormat:@"\n%@",[self batchStatus:batch]];
- if((changed||![previousStatus isEqual:self.statusText]||![previousLanguage isEqual:self.statusLanguage])&&!self.presentedViewController)[self reloadTablePreservingPosition];
+ if(!self.presentedViewController){
+  if(structureChanged||![previousLanguage isEqual:self.statusLanguage])[self reloadTablePreservingPosition];
+  else [self refreshRowsFromJobs:previousJobs statusChanged:![previousStatus isEqual:self.statusText]];
+ }
  });
  });
 }
