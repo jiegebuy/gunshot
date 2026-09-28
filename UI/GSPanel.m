@@ -40,6 +40,7 @@
 @property(nonatomic) BOOL busy;
 @property(nonatomic) BOOL preparingBatch;
 @property(nonatomic) BOOL refreshing;
+@property(nonatomic) BOOL applicationInactive;
 @property(nonatomic) NSUInteger stateGeneration;
 @property(nonatomic) BOOL nativeAuthorizationFailed;
 @property(nonatomic,strong) NSArray *sharedItems;
@@ -53,6 +54,8 @@
 @implementation GSPanel
 - (void)viewDidLoad{
  [super viewDidLoad];GSInstallPhotosGlass();GSInstallNativeRouting();GSInstallUploadDiagnostics();GSInstallUnlimitedStorage();self.title=@"GoToHP";self.jobs=@[];self.statusText=GSL(@"Checking the connection…");self.statusLanguage=GSLanguage();
+ [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillResign:) name:UIApplicationWillResignActiveNotification object:nil];
+ [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationDidActivate:) name:UIApplicationDidBecomeActiveNotification object:nil];
  self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc]initWithTitle:GSL(@"Done") style:UIBarButtonItemStylePlain target:self action:@selector(close)];
  self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc]initWithTitle:self.settingsMode?GSL(@"Reconnect"):GSL(@"Add") style:UIBarButtonItemStylePlain target:self action:@selector(primary)];
 #if GS_JAILED
@@ -93,6 +96,9 @@
 }
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];__weak GSPanel *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *t){[weak refresh];}];}
 - (void)viewWillDisappear:(BOOL)animated{[super viewWillDisappear:animated];[self.timer invalidate];self.timer=nil;}
+- (void)applicationWillResign:(NSNotification *)note{self.applicationInactive=YES;}
+- (void)applicationDidActivate:(NSNotification *)note{self.applicationInactive=NO;if(self.viewIfLoaded.window)[self refresh];}
+- (void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];}
 - (void)openUploadPanel{
  if(self.busy)return;
  GSPanel *panel=[[GSPanel alloc]initWithStyle:UITableViewStyleInsetGrouped];
@@ -138,7 +144,7 @@
 - (void)message:(NSString *)message{
  BOOL changed=![self.statusText isEqual:message]||![self.statusLanguage isEqual:GSLanguage()];
  self.statusText=message;self.statusLanguage=GSLanguage();
- if(changed&&!self.presentedViewController&&![self isInteractingWithTable]&&self.view.window){
+ if(changed&&!self.applicationInactive&&UIApplication.sharedApplication.applicationState!=UIApplicationStateBackground&&!self.presentedViewController&&![self isInteractingWithTable]&&self.view.window){
   // Preparation reports used to rebuild every history row four times a second.
   // Update the status cell only; the periodic refresh handles structure changes.
   UITableViewCell *cell=[self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
@@ -147,13 +153,15 @@
 }
 - (void)refresh{
  // Presented sheets keep their popover anchor; reloading the table under them can drop the source view (issue #50).
- if(UIApplication.sharedApplication.applicationState==UIApplicationStateBackground||(self.busy&&!self.preparingBatch)||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
+ if(self.applicationInactive||UIApplication.sharedApplication.applicationState==UIApplicationStateBackground||(self.busy&&!self.preparingBatch)||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
  NSUInteger generation=self.stateGeneration;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
  NSError *error=nil;NSDictionary *accounts=GSRequest(@{@"op":@"accounts"},&error);NSDictionary *options=accounts?GSRequest(@{@"op":@"options"},&error):nil;
  NSMutableArray *jobs=[NSMutableArray array];NSInteger cursor=0;NSDictionary *page=nil;
  if(options)do{page=GSRequest(@{@"op":@"list",@"cursor":@(cursor)},&error);if(!page)break;[jobs addObjectsFromArray:page[@"jobs"]?:@[]];cursor=[page[@"next"]integerValue];}while(cursor>=0);
  dispatch_async(dispatch_get_main_queue(),^{self.refreshing=NO;
+ // A request started in foreground may finish during the system's scene snapshot.
+ if(self.applicationInactive||UIApplication.sharedApplication.applicationState==UIApplicationStateBackground||!self.viewIfLoaded.window)return;
  // A poll completing during a gesture is superseded by the next idle poll.
  // Do not change the data source count or invalidate self-sizing rows mid-scroll.
  if([self isInteractingWithTable])return;
@@ -520,9 +528,8 @@
  if(!account.length||(GSIsGooglePhotos()&&!identity.length)){[self message:GS_ACCOUNT_HELP];return;}
  self.stateGeneration++;self.busy=YES;self.preparingBatch=YES;
  __weak GSPanel *weak=self;
- BOOL started=GSStartBatchImport(count,source,assets,provider,account,identity,^(NSDictionary *state){
-  [weak message:[weak batchStatus:state]];
- },^(NSDictionary *state){
+ // The two-second poll already reads batch progress; avoid relaying every export to UIKit.
+ BOOL started=GSStartBatchImport(count,source,assets,provider,account,identity,nil,^(NSDictionary *state){
   weak.busy=NO;weak.preparingBatch=NO;[weak message:[weak batchStatus:state]];[weak refresh];
  });
  if(!started){self.busy=NO;self.preparingBatch=NO;[self message:GSL(@"Wait for the operation to finish, then retry.")];}
@@ -553,6 +560,17 @@ void GSPresentSettings(UIViewController *hint){
   if(transition&&transition.isAnimated){
    BOOL queued=[transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context){GSPresentSettings(nil);}];
    if(queued)return;
+  }
+  // Keeping the Google account sheet under our sheet makes its footer participate
+  // in background snapshot layout (observed scene-update watchdog on iPadOS 27).
+  Class menuClass=NSClassFromString(@"OGLAccountMenuViewControllerBase");
+  UIViewController *menu=host;
+  while(menu&&!(menuClass&&[menu isKindOfClass:menuClass]))menu=menu.parentViewController;
+  if(!menu&&menuClass&&[visible isKindOfClass:menuClass])menu=visible;
+  if(menu){
+   while(menu.parentViewController)menu=menu.parentViewController;
+   UIViewController *presenter=menu.presentingViewController;
+   if(presenter){[presenter dismissViewControllerAnimated:YES completion:^{GSPresentSettings(presenter);}];return;}
   }
   GSPanel *panel=[[GSPanel alloc]initWithStyle:UITableViewStyleInsetGrouped];panel.settingsMode=YES;
   UINavigationController *nav=[[UINavigationController alloc]initWithRootViewController:panel];

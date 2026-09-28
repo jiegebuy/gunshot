@@ -19,13 +19,19 @@ static atomic_ulong FixtureAccountReads;
 static atomic_ulong FixtureConditionWrites;
 static atomic_ulong FixtureNativeConnections;
 static atomic_int FixtureConcurrent=2;
+static atomic_bool FixtureHoldAccounts,FixtureAccountsWaiting;
+static dispatch_semaphore_t FixtureAccountsGate;
 @interface GSPanel (GSFixturePolling)
 - (void)refresh;
 - (void)reloadTablePreservingPosition;
 - (void)refreshRowsFromJobs:(NSArray *)previousJobs statusChanged:(BOOL)statusChanged;
 - (void)chooseValueForControl:(NSInteger)control;
 - (void)sheet:(UIAlertController *)sheet;
+- (void)applicationWillResign:(NSNotification *)note;
+- (void)applicationDidActivate:(NSNotification *)note;
 @end
+@interface OGLAccountMenuViewControllerBase : UIViewController @end
+@implementation OGLAccountMenuViewControllerBase @end
 @interface GSFixtureTable : UITableView
 @property(nonatomic) NSUInteger fullReloads;
 @property(nonatomic) NSUInteger forcedLayouts;
@@ -67,7 +73,13 @@ char *GSFixtureRequest(char *json,char *role){
    NSLog(@"Fixture: authorization snapshot returned");
   });
  }
- if([op isEqual:@"accounts"])atomic_fetch_add(&FixtureAccountReads,1);
+ if([op isEqual:@"accounts"]){
+  atomic_fetch_add(&FixtureAccountReads,1);
+  if(atomic_exchange(&FixtureHoldAccounts,false)){
+   atomic_store(&FixtureAccountsWaiting,true);
+   dispatch_semaphore_wait(FixtureAccountsGate,DISPATCH_TIME_FOREVER);
+  }
+ }
  if([op isEqual:@"accounts"])data=@{@"selected":@"test@example.com",@"accounts":@[@{@"email":@"test@example.com"}]};
  if([op isEqual:@"options"])data=@{@"quality":@"original",@"concurrent":@(atomic_load(&FixtureConcurrent)),@"retries":@3,@"wifiOnly":@NO,@"chargingOnly":@NO,@"paused":@NO};
  NSData *reply=[NSJSONSerialization dataWithJSONObject:@{@"ok":@YES,@"data":data} options:0 error:nil];
@@ -186,6 +198,22 @@ static BOOL CheckLargeHistoryRefresh(void){
   ![[table cellForRowAtIndexPath:upload].detailTextLabel.text isEqual:before]&&
   [[table cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].detailTextLabel.text isEqual:@"Uploading fixture"];
 }
+static void CheckInactiveRefresh(GSPanel *panel,void(^next)(void)){
+ Await(^BOOL{return ![[panel valueForKey:@"refreshing"]boolValue];},^{
+  NSDictionary *before=[[panel valueForKey:@"options"]copy];
+  FixtureAccountsGate=dispatch_semaphore_create(0);
+  atomic_store(&FixtureAccountsWaiting,false);atomic_store(&FixtureHoldAccounts,true);
+  atomic_store(&FixtureConcurrent,4);[panel refresh];
+  Await(^BOOL{return atomic_load(&FixtureAccountsWaiting);},^{
+   [panel applicationWillResign:nil];dispatch_semaphore_signal(FixtureAccountsGate);
+   Await(^BOOL{return ![[panel valueForKey:@"refreshing"]boolValue];},^{
+    if(![[panel valueForKey:@"options"]isEqual:before]){Finish(NO,@"in-flight refresh mutated the inactive table model");return;}
+    [panel applicationDidActivate:nil];
+    Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==4;},next,[NSDate dateWithTimeIntervalSinceNow:5]);
+   },[NSDate dateWithTimeIntervalSinceNow:5]);
+  },[NSDate dateWithTimeIntervalSinceNow:5]);
+ },[NSDate dateWithTimeIntervalSinceNow:5]);
+}
 #include "photos_glass_fixture.h"
 @interface GSFixtureScene : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic,strong) UIWindow *window;
@@ -295,15 +323,18 @@ static BOOL CheckLargeHistoryRefresh(void){
   [panel.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:7] atScrollPosition:UITableViewScrollPositionBottom animated:NO];
   Capture(self.window,@"settings-history.png");
   CheckStationaryPolling(panel,self.window,^{
+  CheckInactiveRefresh(panel,^{
   [root dismissViewControllerAnimated:NO completion:^{
-   UIViewController *menu=[UIViewController new];menu.view.backgroundColor=UIColor.secondarySystemBackgroundColor;
-   [root presentViewController:menu animated:NO completion:^{
+   UIViewController *menu=[OGLAccountMenuViewControllerBase new];menu.view.backgroundColor=UIColor.secondarySystemBackgroundColor;
+   UINavigationController *menuContainer=[[UINavigationController alloc]initWithRootViewController:menu];
+   [root presentViewController:menuContainer animated:NO completion:^{
     GSPresentSettings(root); // Root already has a presented account menu.
-    Await(^BOOL{return Panel(menu).viewIfLoaded.window!=nil;},^{
-     UIViewController *first=menu.presentedViewController;
+    Await(^BOOL{return Panel(root).viewIfLoaded.window!=nil;},^{
+     if(menuContainer.presentingViewController||menu.presentedViewController){Finish(NO,@"native account menu remained beneath settings");return;}
+     UIViewController *first=root.presentedViewController;
      GSPresentSettings(root);GSPresentSettings(nil);
      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-      if(menu.presentedViewController!=first||first.presentedViewController){Finish(NO,@"duplicate settings presentation");return;}
+      if(root.presentedViewController!=first||first.presentedViewController){Finish(NO,@"duplicate settings presentation");return;}
       self.window.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
       Capture(self.window,@"settings-dark.png");
       [root dismissViewControllerAnimated:NO completion:^{
@@ -320,6 +351,7 @@ static BOOL CheckLargeHistoryRefresh(void){
     },deadline);
    }];
   }];
+  });
   });
  },deadline);
  },deadline);
