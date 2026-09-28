@@ -5,7 +5,34 @@ import (
 	"errors"
 	"os"
 	"syscall"
+	"time"
 )
+
+// recordLock accumulates engine-lock wait and hold time per IPC op. Ops are
+// from roleAllowed's fixed set. Caller holds e.mu.
+func (e *Engine) recordLock(op string, wait, hold time.Duration) {
+	if e.lockStats == nil {
+		e.lockStats = map[string]*lockStat{}
+	}
+	s := e.lockStats[op]
+	if s == nil {
+		s = &lockStat{}
+		e.lockStats[op] = s
+	}
+	s.count++
+	s.waitNs += int64(wait)
+	s.holdNs += int64(hold)
+}
+
+// lockSnapshot reports lock contention and state persistence cost in ms.
+// Caller holds e.mu.
+func (e *Engine) lockSnapshot() map[string]any {
+	ops := map[string]any{}
+	for op, s := range e.lockStats {
+		ops[op] = map[string]int64{"count": s.count, "waitMs": s.waitNs / 1e6, "holdMs": s.holdNs / 1e6}
+	}
+	return map[string]any{"ops": ops, "saves": e.saveStat.count, "saveMs": e.saveStat.holdNs / 1e6, "jobs": len(e.state.Jobs)}
+}
 
 // Native code supplies identity from the kernel audit trailer, never JSON.
 func roleAllowed(role, op string) bool {
@@ -32,8 +59,11 @@ func (e *Engine) HandleJSON(b []byte, role string) []byte {
 	if json.Unmarshal(b, &r) != nil || !roleAllowed(role, r.Op) {
 		return response(nil, errors.New("unauthorized or invalid request"))
 	}
+	waited := time.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	held := time.Now()
+	defer func() { e.recordLock(r.Op, held.Sub(waited), time.Since(held)) }()
 	if e.fault {
 		return response(nil, errors.New("storage error; restart after checking free space"))
 	}
@@ -139,21 +169,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 	case "clear_completed":
 		next := e.state.Jobs[:0]
 		for _, j := range e.state.Jobs {
-			if j.State == "completed" || j.State == "cancelled" {
-				// Completed rows are removable only after the durable dedup evidence
-				// needed for their generation exists. Source-backed rows retain the
-				// early PhotoKit lookup; legacy rows retain their content fingerprint.
-				if j.State == "completed" {
-					if j.SourceKey != "" {
-						if _, ok := e.sourceReceipts[j.SourceKey]; !ok {
-							next = append(next, j)
-							continue
-						}
-					} else if _, ok := e.fingerprintReceipts[j.Fingerprint]; !ok {
-						next = append(next, j)
-						continue
-					}
-				}
+			if e.historyRemovable(j) {
 				delete(e.jobsByID, j.ID)
 			} else {
 				next = append(next, j)

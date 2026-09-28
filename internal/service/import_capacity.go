@@ -3,19 +3,27 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Caller holds e.mu. Count retained originals across accounts: they all share
 // the same device disk. Terminal files are deleted after durable confirmation.
+// Preparation workers call this every second each, under the engine lock that
+// every upload also needs, so it must stay in memory: sweeping every terminal
+// job's directory here took the lock for thousands of syscalls per call.
 func (e *Engine) importCapacity() map[string]any {
 	var retained, releasable, buffered int64
 	bufferedJobs := 0
 	jobs := 0
+	// Retry cleanup after transient filesystem failures, retaining receipts.
+	sweep := time.Since(e.terminalSwept) >= time.Minute
+	if sweep {
+		e.terminalSwept = time.Now()
+	}
 	for _, j := range e.state.Jobs {
 		switch j.State {
 		case "completed", "cancelled":
-			// Retry cleanup after transient filesystem failures, retaining receipts.
-			if validID(j.ID) {
+			if sweep && validID(j.ID) {
 				_ = os.RemoveAll(e.jobDir(j.ID))
 			}
 			continue

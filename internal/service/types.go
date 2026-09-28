@@ -125,7 +125,19 @@ type Engine struct {
 	uploadIdleTimeout       time.Duration // zero uses two minutes without byte progress
 	smallJobBurst           int
 	wake                    chan struct{}
+	terminalSwept           time.Time            // last sweep of terminal job directories
+	lockStats               map[string]*lockStat // per-op engine lock wait/hold; guarded by mu
+	saveStat                lockStat
 }
+
+type lockStat struct{ count, waitNs, holdNs, bytes int64 }
+
+// Finished rows kept for the queue view. Older ones remain only as durable
+// source/fingerprint receipts, which is all deduplication needs. Without a
+// bound the state file grew by one row per photo (2 MB at 3,500 rows) and was
+// rewritten with fsync on every job transition under the engine lock, and a
+// large album would reach MaxJobs and reject new photos.
+const terminalHistory = 300
 
 var errRequest = errors.New("invalid request")
 
@@ -226,17 +238,66 @@ func Open(root string, runner Runner) (*Engine, error) {
 			_ = os.RemoveAll(en.jobDir(j.ID))
 		}
 	}
+	en.compactHistory()
 	if e = en.save(); e != nil {
 		return nil, e
 	}
 	return en, nil
 }
 func (e *Engine) save() error {
+	started := time.Now()
 	err := atomicJSON(filepath.Join(e.root, "state.json"), e.state)
+	e.saveStat.count++
+	e.saveStat.holdNs += int64(time.Since(started))
 	if err != nil {
 		e.fault = true
 	}
 	return err
+}
+
+// historyRemovable reports whether a finished row can leave the state file
+// without losing deduplication evidence. Caller holds e.mu.
+func (e *Engine) historyRemovable(j *Job) bool {
+	switch j.State {
+	case "cancelled":
+		return true
+	case "completed":
+		// Source-backed rows retain the early PhotoKit lookup; legacy rows
+		// retain their content fingerprint.
+		if j.SourceKey != "" {
+			_, ok := e.sourceReceipts[j.SourceKey]
+			return ok
+		}
+		_, ok := e.fingerprintReceipts[j.Fingerprint]
+		return ok
+	}
+	return false
+}
+
+// compactHistory drops the oldest removable finished rows beyond
+// terminalHistory. Caller holds e.mu and saves afterwards.
+func (e *Engine) compactHistory() {
+	terminal := 0
+	for _, j := range e.state.Jobs {
+		if j.State == "completed" || j.State == "cancelled" {
+			terminal++
+		}
+	}
+	excess := terminal - terminalHistory
+	if excess <= 0 {
+		return
+	}
+	next := e.state.Jobs[:0]
+	for _, j := range e.state.Jobs { // Oldest first: rows are appended at begin.
+		if excess > 0 && e.historyRemovable(j) {
+			delete(e.jobsByID, j.ID)
+			excess--
+			continue
+		}
+		next = append(next, j)
+	}
+	clear(e.state.Jobs[len(next):]) // Release removed jobs held by the backing array.
+	e.state.Jobs = next
 }
 func (e *Engine) jobDir(id string) string { return filepath.Join(e.root, "media", id) }
 func (e *Engine) find(id string) *Job     { return e.jobsByID[id] }

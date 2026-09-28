@@ -376,6 +376,7 @@ func (e *Engine) seal(j *Job) (any, error) {
 			}
 		}
 		j.State = "cancelled"
+		e.compactHistory()
 		if err := e.save(); err != nil {
 			return nil, err
 		}
@@ -395,6 +396,7 @@ func (e *Engine) seal(j *Job) (any, error) {
 				}
 			}
 			j.State = "cancelled"
+			e.compactHistory()
 			if err := e.save(); err != nil {
 				return nil, err
 			}
@@ -581,6 +583,9 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	default:
 		j.State = "failed"
 		j.Error = "upload_failed_check_account_and_network"
+	}
+	if j.State == "completed" || j.State == "cancelled" {
+		e.compactHistory()
 	}
 	if e.save() == nil && (j.State == "completed" || j.State == "cancelled") {
 		_ = os.RemoveAll(e.jobDir(j.ID))
