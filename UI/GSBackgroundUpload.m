@@ -50,25 +50,23 @@ static BOOL GSPolling;
 //   assertions once the budget is spent. A delayed cleanup can never run if
 //   iOS suspends us first, and a retrying owner must not reopen the assertion.
 @interface GSTaskRecord : NSObject
-@property UIBackgroundTaskIdentifier identifier; // UIKit ID once begin returns
+@property UIBackgroundTaskIdentifier identifier,local;
 @property(copy) void (^handler)(void);
+@property(copy) NSString *name,*caller;
+@property NSUInteger generation;
 @property BOOL expired,ended;
-@property(strong) NSArray<NSNumber *> *callers;
 @end
 @implementation GSTaskRecord @end
 static const UIBackgroundTaskIdentifier GSDeferredBase=(UIBackgroundTaskIdentifier)1<<40;
 static NSObject *GSDeferredLock;
 static BOOL GSDeferring,GSExpiring;
-static NSMutableDictionary<NSNumber *,NSArray *> *GSDeferred; // local ID -> @[name, handler]
-static NSMutableDictionary<NSNumber *,NSNumber *> *GSHandedBack; // local ID -> UIKit ID
-static NSMutableDictionary<NSNumber *,GSTaskRecord *> *GSLive; // UIKit ID -> record
+static NSMutableDictionary<NSNumber *,GSTaskRecord *> *GSDeferred,*GSHandedBack,*GSLive;
 static NSMutableDictionary<NSString *,NSNumber *> *GSForcedCallers;
-static NSMutableSet<NSNumber *> *GSForcedIDs; // force-ended; the owner's later end is dropped
-static NSUInteger GSDeferredNext,GSDeferredTotal,GSHandedBackTotal,GSForcedEnds,GSLateExpired,GSExpiryWindows,GSRejectedLate;
+static NSMutableSet<NSNumber *> *GSForcedIDs;
+static NSUInteger GSBudgetGeneration,GSDeferredNext,GSDeferredTotal,GSHandedBackTotal,GSForcedEnds,GSLateExpired,GSExpiryWindows,GSRejectedLate;
 static UIBackgroundTaskIdentifier (*GSOriginalBeginNamed)(id,SEL,NSString *,void (^)(void));
 static UIBackgroundTaskIdentifier (*GSOriginalBegin)(id,SEL,void (^)(void));
 static void (*GSOriginalEnd)(id,SEL,UIBackgroundTaskIdentifier);
-static void GSExpireTask(GSTaskRecord *record,BOOL late);
 static NSString *GSCallerKey(NSArray<NSNumber *> *callers){
  // First frames outside this dylib and the system task plumbing name the owner.
  Dl_info own={0};dladdr((const void *)GSCallerKey,&own);
@@ -83,74 +81,112 @@ static NSString *GSCallerKey(NSArray<NSNumber *> *callers){
  }
  return frames.count?[frames componentsJoinedByString:@" < "]:@"unknown";
 }
-static void GSForceEnd(GSTaskRecord *record){
+static GSTaskRecord *GSNewTask(NSString *name,void (^handler)(void)){
+ GSTaskRecord *record=[GSTaskRecord new];record.identifier=UIBackgroundTaskInvalid;record.name=name;record.handler=handler;
+ NSArray *stack=NSThread.callStackReturnAddresses;
+ record.caller=GSCallerKey([stack subarrayWithRange:NSMakeRange(0,MIN((NSUInteger)12,stack.count))]);
+ return record;
+}
+static void GSCloseBudget(void){
+ // Caller holds GSDeferredLock. The generation also rejects begins still inside UIKit.
+ if(!GSExpiring){GSExpiring=YES;GSBudgetGeneration++;GSExpiryWindows++;}
+}
+static void GSCountForced(GSTaskRecord *record){
  @synchronized(GSDeferredLock){
-  if(record.ended)return;
-  record.ended=YES;[GSLive removeObjectForKey:@(record.identifier)];[GSForcedIDs addObject:@(record.identifier)];GSForcedEnds++;
-  NSString *key=GSCallerKey(record.callers);
+  GSForcedEnds++;NSString *key=record.caller;
   if(GSForcedCallers[key]||GSForcedCallers.count<16)GSForcedCallers[key]=@([GSForcedCallers[key]unsignedIntegerValue]+1);
  }
- GSOriginalEnd(UIApplication.sharedApplication,@selector(endBackgroundTask:),record.identifier);
 }
-static void GSSweepExpiring(void){
- NSArray *open;@synchronized(GSDeferredLock){if(!GSExpiring)return;open=GSLive.allValues;}
- for(GSTaskRecord *record in open)GSExpireTask(record,YES);
+static void GSDeliverExpirations(NSArray *handlers){
+ if(!handlers.count)return;
+ void (^deliver)(void)=^{for(void (^handler)(void) in handlers)handler();};
+ if(NSThread.isMainThread)deliver();else dispatch_async(dispatch_get_main_queue(),deliver);
 }
-static void GSExpireTask(GSTaskRecord *record,BOOL late){
- if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{GSExpireTask(record,late);});return;}
- BOOL sweep=NO;
+static NSArray *GSReleaseExpired(NSArray<GSTaskRecord *> *records,GSTaskRecord *trigger){
+ NSMutableArray *released=[NSMutableArray array],*handlers=[NSMutableArray array];
  @synchronized(GSDeferredLock){
-  if(record.ended||record.expired||(late&&!GSExpiring))return; // Late expiry ends at foreground.
-  // UIKit may expire a task before begin has returned its identifier.
-  if(record.identifier==UIBackgroundTaskInvalid){dispatch_async(dispatch_get_main_queue(),^{GSExpireTask(record,late);});return;}
-  record.expired=YES;if(late)GSLateExpired++;
-  if(!GSExpiring){GSExpiring=YES;GSExpiryWindows++;sweep=YES;}
+  for(GSTaskRecord *record in records){
+   if(record.ended)continue;
+   record.expired=YES;record.ended=YES;if(record!=trigger)GSLateExpired++;
+   [GSLive removeObjectForKey:@(record.identifier)];
+   if(record.local)[GSHandedBack removeObjectForKey:@(record.local)];else [GSForcedIDs addObject:@(record.identifier)];
+   if(record.handler)[handlers addObject:record.handler];record.handler=nil;
+   [released addObject:record];
+  }
  }
- // Tasks begun around the expiry warning may never see a handler; expire them too.
- if(record.handler)record.handler();
- GSForceEnd(record);
- if(sweep)GSSweepExpiring();
+ // Release every raw assertion before running any owner code or diagnostic aggregation.
+ for(GSTaskRecord *record in released)GSOriginalEnd(UIApplication.sharedApplication,@selector(endBackgroundTask:),record.identifier);
+ for(GSTaskRecord *record in released)GSCountForced(record);
+ return handlers;
 }
-static UIBackgroundTaskIdentifier GSBeginReal(id app,BOOL named,NSString *name,void (^handler)(void)){
- @synchronized(GSDeferredLock){if(GSExpiring){GSRejectedLate++;return UIBackgroundTaskInvalid;}}
- GSTaskRecord *record=[GSTaskRecord new];record.identifier=UIBackgroundTaskInvalid;record.handler=handler;
- NSArray *stack=NSThread.callStackReturnAddresses;record.callers=[stack subarrayWithRange:NSMakeRange(0,MIN((NSUInteger)12,stack.count))];
- void (^expire)(void)=^{GSExpireTask(record,NO);};
- UIBackgroundTaskIdentifier real=named?GSOriginalBeginNamed(app,@selector(beginBackgroundTaskWithName:expirationHandler:),name,expire):
+static void GSExpireTask(GSTaskRecord *record){
+ NSArray *open;
+ @synchronized(GSDeferredLock){
+  if(record.ended||record.expired)return;
+  record.expired=YES;
+  if(record.identifier==UIBackgroundTaskInvalid&&record.generation!=GSBudgetGeneration)return;
+  GSCloseBudget();open=GSLive.allValues;
+ }
+ // Pending IDs are settled by the returning begin call, never by a main-queue retry.
+ GSDeliverExpirations(GSReleaseExpired(open,record));
+}
+static UIBackgroundTaskIdentifier GSCreateReal(id app,BOOL named,GSTaskRecord *record){
+ @synchronized(GSDeferredLock){
+  if(record.ended)return UIBackgroundTaskInvalid;
+  if(GSExpiring||record.expired||(record.local&&record.generation!=GSBudgetGeneration)){GSRejectedLate++;record.expired=YES;return UIBackgroundTaskInvalid;}
+  record.generation=GSBudgetGeneration;
+ }
+ void (^expire)(void)=^{GSExpireTask(record);};
+ UIBackgroundTaskIdentifier real=named?GSOriginalBeginNamed(app,@selector(beginBackgroundTaskWithName:expirationHandler:),record.name,expire):
   GSOriginalBegin(app,@selector(beginBackgroundTaskWithExpirationHandler:),expire);
  if(real==UIBackgroundTaskInvalid)return real;
- BOOL late;
- @synchronized(GSDeferredLock){record.identifier=real;GSLive[@(real)]=record;late=GSExpiring;}
- if(late)GSExpireTask(record,YES); // Expiry raced the begin call; do not delay cleanup.
+ BOOL rejected;
+ @synchronized(GSDeferredLock){
+  rejected=record.ended||GSExpiring||record.expired||record.generation!=GSBudgetGeneration;
+  if(rejected){record.expired=YES;GSRejectedLate++;}
+  else{record.identifier=real;GSLive[@(real)]=record;[GSForcedIDs removeObject:@(real)];}
+ }
+ if(rejected){
+  // UIKit begin/end are thread-safe. An unpublished ID has no owner to notify.
+  GSOriginalEnd(app,@selector(endBackgroundTask:),real);GSCountForced(record);return UIBackgroundTaskInvalid;
+ }
  return real;
 }
-static UIBackgroundTaskIdentifier GSDeferTask(NSString *name,void (^handler)(void)){
- // Caller holds GSDeferredLock.
- UIBackgroundTaskIdentifier local=GSDeferredBase+(++GSDeferredNext);GSDeferredTotal++;
- GSDeferred[@(local)]=@[name?:(id)NSNull.null,handler?[handler copy]:(id)NSNull.null];
- return local;
+static UIBackgroundTaskIdentifier GSBeginTask(id app,BOOL named,NSString *name,void (^handler)(void)){
+ @synchronized(GSDeferredLock){if(!GSDeferring&&GSExpiring){GSRejectedLate++;return UIBackgroundTaskInvalid;}}
+ GSTaskRecord *record=GSNewTask(name,handler);
+ @synchronized(GSDeferredLock){
+  if(GSDeferring){
+   record.local=GSDeferredBase+(++GSDeferredNext);GSDeferredTotal++;GSDeferred[@(record.local)]=record;return record.local;
+  }
+ }
+ UIBackgroundTaskIdentifier real=GSCreateReal(app,named,record);
+ if(real==UIBackgroundTaskInvalid)@synchronized(GSDeferredLock){record.ended=YES;record.handler=nil;}
+ return real;
 }
 static UIBackgroundTaskIdentifier GSBeginNamed(id app,SEL selector,NSString *name,void (^handler)(void)){
- @synchronized(GSDeferredLock){if(GSDeferring)return GSDeferTask(name,handler);}
- return GSBeginReal(app,YES,name,handler);
+ return GSBeginTask(app,YES,name,handler);
 }
 static UIBackgroundTaskIdentifier GSBegin(id app,SEL selector,void (^handler)(void)){
- @synchronized(GSDeferredLock){if(GSDeferring)return GSDeferTask(nil,handler);}
- return GSBeginReal(app,NO,nil,handler);
+ return GSBeginTask(app,NO,nil,handler);
 }
 static void GSEnd(id app,SEL selector,UIBackgroundTaskIdentifier identifier){
- if(identifier>=GSDeferredBase&&identifier!=UIBackgroundTaskInvalid){
-  NSNumber *handed=nil;
-  @synchronized(GSDeferredLock){
-   if(GSDeferred[@(identifier)]){[GSDeferred removeObjectForKey:@(identifier)];return;}
-   handed=GSHandedBack[@(identifier)];[GSHandedBack removeObjectForKey:@(identifier)];
-  }
-  if(!handed)return; // Already ended; UIKit likewise ignores a stale identifier.
-  identifier=handed.unsignedIntegerValue;
- }
+ if(identifier==UIBackgroundTaskInvalid)return;
  @synchronized(GSDeferredLock){
-  if([GSForcedIDs containsObject:@(identifier)]){[GSForcedIDs removeObject:@(identifier)];return;}
-  GSLive[@(identifier)].ended=YES;[GSLive removeObjectForKey:@(identifier)];
+  GSTaskRecord *record;
+  if(identifier>=GSDeferredBase){
+   record=GSDeferred[@(identifier)]?:GSHandedBack[@(identifier)];
+   if(!record)return;
+   [GSDeferred removeObjectForKey:@(identifier)];[GSHandedBack removeObjectForKey:@(identifier)];
+   identifier=record.identifier;
+  }else{
+   if([GSForcedIDs containsObject:@(identifier)])return;
+   record=GSLive[@(identifier)];
+  }
+  if(record.ended)return;
+  record.ended=YES;record.handler=nil;
+  if(identifier==UIBackgroundTaskInvalid)return; // An in-flight hand-back will release its own raw ID.
+  [GSLive removeObjectForKey:@(identifier)];
  }
  GSOriginalEnd(app,selector,identifier);
 }
@@ -165,7 +201,7 @@ static BOOL GSInstallDeferredTasks(void){
   GSDeferredLock=[NSObject new];GSDeferred=[NSMutableDictionary dictionary];GSHandedBack=[NSMutableDictionary dictionary];
   GSLive=[NSMutableDictionary dictionary];GSForcedCallers=[NSMutableDictionary dictionary];GSForcedIDs=[NSMutableSet set];
   [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){
-   @synchronized(GSDeferredLock){GSExpiring=NO;} // A new background budget starts on the next exit.
+   @synchronized(GSDeferredLock){GSExpiring=NO;GSBudgetGeneration++;}
   }];
   GSOriginalEnd=(void *)method_setImplementation(end,(IMP)GSEnd);
   GSOriginalBeginNamed=(void *)method_setImplementation(named,(IMP)GSBeginNamed);
@@ -174,36 +210,58 @@ static BOOL GSInstallDeferredTasks(void){
  });
  return installed;
 }
-static void GSStopDeferringTasks(void){
- if(!GSDeferredLock)return;
- // Held under the (recursive) lock so an end racing the hand-back is never lost.
+static NSArray<GSTaskRecord *> *GSDetachDeferredTasks(void){
  @synchronized(GSDeferredLock){
-  GSDeferring=NO;
-  for(NSNumber *local in GSDeferred.allKeys){
-   NSArray *task=GSDeferred[local];
-   NSString *name=task[0]==NSNull.null?nil:task[0];
-   void (^handler)(void)=task[1]==NSNull.null?nil:task[1];
-   UIBackgroundTaskIdentifier real=GSBeginReal(UIApplication.sharedApplication,YES,name,handler);
-   if(real!=UIBackgroundTaskInvalid){GSHandedBack[local]=@(real);GSHandedBackTotal++;}
-   else if(handler)dispatch_async(dispatch_get_main_queue(),handler); // No time left: expire as UIKit would.
+  GSDeferring=NO;NSArray *tasks=GSDeferred.allValues;
+  // A reentrant replacement must not lend its fresh budget to this detached hand-back.
+  for(GSTaskRecord *record in tasks)record.generation=GSBudgetGeneration;
+  [GSHandedBack addEntriesFromDictionary:GSDeferred];[GSDeferred removeAllObjects];return tasks;
+ }
+}
+static void GSFinishDeferredTasks(NSArray<GSTaskRecord *> *tasks,BOOL expired){
+ for(GSTaskRecord *record in tasks){
+  if(!expired&&GSCreateReal(UIApplication.sharedApplication,YES,record)!=UIBackgroundTaskInvalid){
+   @synchronized(GSDeferredLock){GSHandedBackTotal++;}
+  }else{
+   void (^handler)(void)=nil;
+   @synchronized(GSDeferredLock){
+    if(!record.ended){record.ended=YES;record.expired=YES;handler=record.handler;record.handler=nil;}
+    [GSHandedBack removeObjectForKey:@(record.local)];
+   }
+   if(handler)handler();
   }
-  [GSDeferred removeAllObjects];
  }
 }
 static void GSBackgroundRecord(NSDictionary *state){
  @synchronized(GSBackgroundUploadChanged){GSSnapshot=[state copy];}
  [NSNotificationCenter.defaultCenter postNotificationName:GSBackgroundUploadChanged object:nil];
 }
-static void GSEndShortTask(void){if(GSShortTask!=UIBackgroundTaskInvalid){[UIApplication.sharedApplication endBackgroundTask:GSShortTask];GSShortTask=UIBackgroundTaskInvalid;}}
-static void GSFinishBackground(BOOL success,NSString *status){
- GSEpoch++;[GSTimer invalidate];GSTimer=nil;
- id<GSContinuedTask> task=GSTask;GSTask=nil;
- if(GSIdentifier)[[NSClassFromString(@"BGTaskScheduler") sharedScheduler] cancelTaskRequestWithIdentifier:GSIdentifier];
- GSIdentifier=nil;GSBackgroundRecord(@{@"granted":@NO,@"status":status});
- GSStopDeferringTasks(); // Before completing: UIKit must hold them before dasd releases the process.
- if(task){task.expirationHandler=nil;[task setTaskCompletedWithSuccess:success];}
- GSEndShortTask();
+static void GSEndShortTask(void){
+ UIBackgroundTaskIdentifier task=GSShortTask;GSShortTask=UIBackgroundTaskInvalid;
+ if(task!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:task];
 }
+static NSUInteger GSFinishBackgroundWithExpiry(BOOL success,NSString *status,BOOL expired){
+ NSUInteger epoch=++GSEpoch;[GSTimer invalidate];GSTimer=nil;
+ id<GSContinuedTask> task=GSTask;GSTask=nil;
+ NSString *identifier=GSIdentifier;GSIdentifier=nil;
+ UIBackgroundTaskIdentifier shortTask=GSShortTask;GSShortTask=UIBackgroundTaskInvalid;
+ NSArray *deferred=GSDetachDeferredTasks(),*open=nil;
+ if(expired&&UIApplication.sharedApplication.applicationState==UIApplicationStateBackground){
+  @synchronized(GSDeferredLock){GSCloseBudget();open=GSLive.allValues;}
+ }
+ task.expirationHandler=nil;
+ NSArray *handlers=GSReleaseExpired(open,nil);
+ if(identifier)[[NSClassFromString(@"BGTaskScheduler") sharedScheduler] cancelTaskRequestWithIdentifier:identifier];
+ if(expired&&epoch==GSEpoch)GSStopBatchImport(YES);
+ GSDeliverExpirations(handlers);
+ GSFinishDeferredTasks(deferred,expired);
+ // Everything above can reenter and start a replacement; only detached old state is released below.
+ if(task)[task setTaskCompletedWithSuccess:success];
+ if(shortTask!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:shortTask];
+ if(epoch==GSEpoch)GSBackgroundRecord(@{@"granted":@NO,@"status":status});
+ return epoch;
+}
+static NSUInteger GSFinishBackground(BOOL success,NSString *status){return GSFinishBackgroundWithExpiry(success,status,NO);}
 static void GSPollBackground(void){
  if(GSPolling)return;GSPolling=YES;NSUInteger epoch=GSEpoch;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
@@ -244,13 +302,16 @@ void GSBeginBackgroundUpload(NSUInteger count){
  NSCAssert(NSThread.isMainThread,@"Start a user-requested background upload on main");
  static dispatch_once_t once;dispatch_once(&once,^{GSShortTask=UIBackgroundTaskInvalid;});
  if(!count)return;
- GSFinishBackground(NO,@"replaced");GSCount=count;GSProgressUnits=0;NSUInteger epoch=GSEpoch;
- GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});
- GSShortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
+ NSUInteger epoch=GSFinishBackground(NO,@"replaced");if(epoch!=GSEpoch)return;
+ GSCount=count;GSProgressUnits=0;
+ GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
+ UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
   if(epoch!=GSEpoch)return;
   GSEndShortTask();
-  if(!GSTask){GSStopBatchImport(YES);GSFinishBackground(NO,@"expired");}
+  if(!GSTask)GSFinishBackgroundWithExpiry(NO,@"expired",YES);
  }];
+ if(epoch!=GSEpoch){[UIApplication.sharedApplication endBackgroundTask:shortTask];return;}
+ GSShortTask=shortTask;
  dlopen("/System/Library/Frameworks/BackgroundTasks.framework/BackgroundTasks",RTLD_LAZY|RTLD_LOCAL);
  Class requestClass=NSClassFromString(@"BGContinuedProcessingTaskRequest");
  id scheduler=[NSClassFromString(@"BGTaskScheduler") sharedScheduler];
@@ -262,25 +323,24 @@ void GSBeginBackgroundUpload(NSUInteger count){
   BOOL registered=[scheduler registerForTaskWithIdentifier:GSIdentifier usingQueue:dispatch_get_main_queue() launchHandler:^(id<GSContinuedTask> task){
    if(epoch!=GSEpoch){[task setTaskCompletedWithSuccess:NO];return;}
    GSTask=task;
-   if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;GSExpiring=NO;}
-   task.expirationHandler=^{dispatch_async(dispatch_get_main_queue(),^{
-    if(epoch!=GSEpoch)return;
-    // The continued-processing budget is spent too. Handing hundreds of host
-    // tasks back as fresh UIKit assertions here creates another expiry storm.
-    @synchronized(GSDeferredLock){if(!GSExpiring){GSExpiring=YES;GSExpiryWindows++;}}
-    GSSweepExpiring();
-    GSStopBatchImport(YES);GSFinishBackground(NO,@"expired");
-   });};
-   GSBackgroundRecord(@{@"granted":@YES,@"status":@"running"});GSEndShortTask();GSPollBackground();
+   if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;GSExpiring=NO;GSBudgetGeneration++;}
+   task.expirationHandler=^{
+    void (^expire)(void)=^{if(epoch==GSEpoch)GSFinishBackgroundWithExpiry(NO,@"expired",YES);};
+    if(NSThread.isMainThread)expire();else dispatch_async(dispatch_get_main_queue(),expire);
+   };
+   GSBackgroundRecord(@{@"granted":@YES,@"status":@"running"});if(epoch!=GSEpoch)return;
+   GSEndShortTask();GSPollBackground();
   }];
+  if(epoch!=GSEpoch)return;
   if(registered){
    id<GSContinuedRequest> request=[(id<GSContinuedRequest>)[requestClass alloc] initWithIdentifier:GSIdentifier title:@"GoToHP" subtitle:GSL(@"Preparing uploads")];
    NSError *error=nil;
    BOOL accepted=[scheduler submitTaskRequest:request error:&error];
+   if(epoch!=GSEpoch)return;
    if(!GSTask)GSBackgroundRecord(@{@"granted":@NO,@"status":accepted?@"requested":@"rejected",@"errorCode":@(error.code)});
   }else GSBackgroundRecord(@{@"granted":@NO,@"status":@"registration_failed"});
  }
- GSTimer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){GSPollBackground();}];
+ if(epoch==GSEpoch)GSTimer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){if(epoch==GSEpoch)GSPollBackground();}];
 #endif
 }
 void GSInstallBackgroundTaskGuard(void){

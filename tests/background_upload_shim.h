@@ -2,7 +2,9 @@
 typedef NSUInteger UIBackgroundTaskIdentifier;
 static const UIBackgroundTaskIdentifier UIBackgroundTaskInvalid=NSUIntegerMax;
 static NSString *const UIApplicationDidBecomeActiveNotification=@"UIApplicationDidBecomeActiveNotification";
+typedef NS_ENUM(NSInteger,UIApplicationState){UIApplicationStateActive,UIApplicationStateInactive,UIApplicationStateBackground};
 @interface UIApplication : NSObject
+@property UIApplicationState applicationState;
 + (instancetype)sharedApplication;
 - (UIBackgroundTaskIdentifier)beginBackgroundTaskWithExpirationHandler:(void (^)(void))handler;
 - (UIBackgroundTaskIdentifier)beginBackgroundTaskWithName:(NSString *)name expirationHandler:(void (^)(void))handler;
