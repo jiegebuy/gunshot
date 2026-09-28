@@ -47,6 +47,7 @@
 @property(nonatomic,copy) NSString *statusText;
 @property(nonatomic,copy) NSString *statusLanguage;
 @property(nonatomic,copy) NSString *displayLanguage;
+@property(nonatomic,copy) NSString *uploadHelp;
 @property(nonatomic,strong) NSIndexPath *sheetSourcePath;
 @end
 @implementation GSPanel
@@ -129,6 +130,7 @@
  // must not invalidate the heights and cells of every completed upload.
  for(NSIndexPath *path in self.tableView.indexPathsForVisibleRows){
   if(path.section==0&&statusChanged)[paths addObject:path];
+  else if(statusChanged&&[self controlAtPath:path]==18)[paths addObject:path];
   else if(path.section==section&&path.row<self.jobs.count&&path.row<previousJobs.count&&![self.jobs[path.row] isEqual:previousJobs[path.row]])[paths addObject:path];
  }
  if(paths.count)[UIView performWithoutAnimation:^{[self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationNone];}];
@@ -157,7 +159,9 @@
  if([self isInteractingWithTable])return;
  if(generation!=self.stateGeneration){[self refresh];return;}if(error){[self message:error.localizedDescription];return;}
  NSArray *previousJobs=self.jobs;
- BOOL structureChanged=![self.accounts isEqual:accounts]||![self.options isEqual:options]||previousJobs.count!=jobs.count;
+ NSString *uploadHelp=GS_QUEUED_HELP;
+ BOOL structureChanged=![self.accounts isEqual:accounts]||![self.options isEqual:options]||previousJobs.count!=jobs.count||![self.uploadHelp isEqual:uploadHelp];
+ self.uploadHelp=uploadHelp;
  NSString *previousStatus=self.statusText,*previousLanguage=self.statusLanguage;
  self.accounts=accounts;self.options=[options mutableCopy];self.jobs=jobs;
  NSString *readiness=GSL(@"Ready to upload");
