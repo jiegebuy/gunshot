@@ -31,7 +31,9 @@ func (e *Engine) lockSnapshot() map[string]any {
 	for op, s := range e.lockStats {
 		ops[op] = map[string]int64{"count": s.count, "waitMs": s.waitNs / 1e6, "holdMs": s.holdNs / 1e6}
 	}
-	return map[string]any{"ops": ops, "saves": e.saveStat.count, "saveMs": e.saveStat.holdNs / 1e6, "jobs": len(e.state.Jobs)}
+	var errno syscall.Errno
+	errors.As(e.storageError, &errno)
+	return map[string]any{"ops": ops, "saves": e.saveStat.count, "saveMs": e.saveStat.holdNs / 1e6, "jobs": len(e.state.Jobs), "storageFault": e.fault, "lastStorageError": storageErrorCode(e.storageError), "storageErrno": int(errno)}
 }
 
 // Native code supplies identity from the kernel audit trailer, never JSON.
@@ -64,8 +66,8 @@ func (e *Engine) HandleJSON(b []byte, role string) []byte {
 	defer e.mu.Unlock()
 	held := time.Now()
 	defer func() { e.recordLock(r.Op, held.Sub(waited), time.Since(held)) }()
-	if e.fault {
-		return response(nil, errors.New("storage error; restart after checking free space"))
+	if e.fault && r.Op != "upload_summary" && r.Op != "list" && r.Op != "options" && r.Op != "ping" && r.Op != "conditions" {
+		return response(nil, errStorageFault)
 	}
 	data, err := e.handle(r, role)
 	return response(data, err)
@@ -77,6 +79,8 @@ func response(data any, err error) []byte {
 		switch {
 		case errors.Is(err, errRequest):
 			code = "invalid_request"
+		case errors.Is(err, errStorageFault):
+			code = "storage_fault"
 		case errors.Is(err, syscall.ENOSPC):
 			code = "storage_full"
 		case errors.Is(err, os.ErrPermission):

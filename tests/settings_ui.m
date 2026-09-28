@@ -16,6 +16,7 @@
 
 static BOOL SnapshotDuringAuthorization;
 static atomic_ulong FixtureAccountReads;
+static atomic_ulong FixtureConditionWrites;
 static atomic_ulong FixtureNativeConnections;
 static atomic_int FixtureConcurrent=2;
 @interface GSPanel (GSFixturePolling)
@@ -53,6 +54,7 @@ char *GSNativeBearer(const char *identifier){return NULL;}
 char *GSFixtureRequest(char *json,char *role){
  NSDictionary *request=[NSJSONSerialization JSONObjectWithData:[[NSString stringWithUTF8String:json]dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
  NSString *op=request[@"op"];id data=@{};
+ if([op isEqual:@"conditions"])atomic_fetch_add(&FixtureConditionWrites,1);
  // Runtime requests cross the real C ABI and Go JSON decoder. The previous
  // all-fake service accepted integer 1/0 via boolValue and missed this bug.
  if([op isEqual:@"conditions"]||[op isEqual:@"list"]||[op isEqual:@"upload_summary"])return GunshotRequest(json,role);
@@ -144,8 +146,10 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
  NSUInteger reads=atomic_load(&FixtureAccountReads);
+ NSUInteger conditions=atomic_load(&FixtureConditionWrites);
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{
   CGFloat now=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
+  if(atomic_load(&FixtureConditionWrites)>conditions+1){Finish(NO,@"unchanged polling repeatedly rewrote network conditions");return;}
   if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,@"unchanged timer polls replaced the switch or moved the settings list");return;}
   // A real changed snapshot still updates, retaining the visible row's position.
   // Preparation reserves mutation controls but must not disable live polling.

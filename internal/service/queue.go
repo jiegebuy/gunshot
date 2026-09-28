@@ -427,7 +427,13 @@ func retryableFailure(j *Job) bool {
 func (e *Engine) Tick() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.stopped || e.fault || e.state.Options.Paused || !e.online || (e.state.Options.WiFiOnly && !e.wifi) || (e.state.Options.ChargingOnly && !e.charging) {
+	if e.stopped {
+		return
+	}
+	if e.fault && !e.recoverStorage(time.Now()) {
+		return
+	}
+	if e.state.Options.Paused || !e.online || (e.state.Options.WiFiOnly && !e.wifi) || (e.state.Options.ChargingOnly && !e.charging) {
 		return
 	}
 	now := time.Now().Unix()

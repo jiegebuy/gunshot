@@ -121,6 +121,8 @@ type Engine struct {
 	stopped                 bool
 	wg                      sync.WaitGroup
 	fault                   bool
+	storageError            error
+	storageRetry            time.Time
 	commitTimeout           time.Duration // zero uses the production five-minute limit
 	uploadIdleTimeout       time.Duration // zero uses two minutes without byte progress
 	smallJobBurst           int
@@ -250,7 +252,13 @@ func (e *Engine) save() error {
 	e.saveStat.count++
 	e.saveStat.holdNs += int64(time.Since(started))
 	if err != nil {
+		if !e.fault {
+			e.storageError = err
+		}
 		e.fault = true
+		for _, cancel := range e.active {
+			cancel()
+		}
 	}
 	return err
 }

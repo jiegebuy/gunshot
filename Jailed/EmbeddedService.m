@@ -1,5 +1,6 @@
 #import "../Shared/GSLocalization.h"
 #include <limits.h>
+#include <stdatomic.h>
 #import "../Shared/IPCProtocol.h"
 #import <UIKit/UIKit.h>
 #import <Network/Network.h>
@@ -15,6 +16,8 @@ static BOOL GSReady;
 static nw_path_monitor_t GSMonitor;
 static NSLock *GSStateLock;
 static NSMutableDictionary *GSState;
+static NSDictionary *GSAppliedConditions;
+static atomic_bool GSApplicationSampleQueued;
 static void GSStateInitialize(void) {
  static dispatch_once_t once;dispatch_once(&once,^{
   GSStateLock=[NSLock new];
@@ -38,7 +41,7 @@ static NSDictionary *GSCall(NSDictionary *request,const char *role) {
  if(![parsed isKindOfClass:NSDictionary.class]||![parsed[@"ok"]boolValue]){
   // Only record protocol error codes, never request bodies or photo contents.
   NSString *code=[parsed isKindOfClass:NSDictionary.class]?parsed[@"error"]:nil;
-  if(![@[@"invalid_request",@"unauthorized",@"internal_error",@"not_initialized",@"storage_full",@"storage_permission",@"storage_missing"]containsObject:code?:@""])code=@"request_failed";
+  if(![@[@"invalid_request",@"unauthorized",@"internal_error",@"not_initialized",@"storage_full",@"storage_permission",@"storage_missing",@"storage_fault",@"operation_failed",@"response_too_large"]containsObject:code?:@""])code=@"request_failed";
   GSRecord(@{@"lastRequestFailure":@{@"op":request[@"op"]?:@"unknown",@"code":code}});return nil;
  }
  return parsed[@"data"]==NSNull.null?@{}:parsed[@"data"];
@@ -49,7 +52,10 @@ static void GSConditions(void) {
  // ObjC relational/logical expressions have type int: @(a && b) becomes JSON
  // 1/0, which Go correctly rejects for a bool field. Always box real booleans.
  BOOL execution=[state[@"foreground"]boolValue]||[state[@"backgroundUpload"][@"granted"]boolValue];
- NSDictionary *result=GSCall(@{@"op":@"conditions",@"online":(execution&&[state[@"networkOnline"]boolValue])?@YES:@NO,@"wifi":[state[@"wifi"]boolValue]?@YES:@NO,@"charging":[state[@"charging"]boolValue]?@YES:@NO},"daemon");
+ NSDictionary *conditions=@{@"op":@"conditions",@"online":(execution&&[state[@"networkOnline"]boolValue])?@YES:@NO,@"wifi":[state[@"wifi"]boolValue]?@YES:@NO,@"charging":[state[@"charging"]boolValue]?@YES:@NO};
+ if([GSAppliedConditions isEqual:conditions])return;
+ NSDictionary *result=GSCall(conditions,"daemon");
+ GSAppliedConditions=result?conditions:nil;
  GSRecord(@{@"conditionsAccepted":result?@YES:@NO});
 }
 static void GSSampleApplication(void) {
@@ -106,7 +112,8 @@ BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long o
 NSDictionary *GSRequest(NSDictionary *request,NSError **error) {
  GSStart();
  // Repair missed lifecycle notifications when a settings page starts polling.
- if(NSThread.isMainThread)GSSampleApplication();else dispatch_async(dispatch_get_main_queue(),^{GSSampleApplication();});
+ if(NSThread.isMainThread)GSSampleApplication();
+ else if(!atomic_exchange(&GSApplicationSampleQueued,true))dispatch_async(dispatch_get_main_queue(),^{atomic_store(&GSApplicationSampleQueued,false);GSSampleApplication();});
  __block NSDictionary *result=nil;
  dispatch_sync(GSCoreQueue,^{
  if(!GSReady)return;
@@ -119,6 +126,10 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error) {
  if(result&&[op isEqual:@"upload_summary"])GSRecord(@{@"uploadSummary":result});
  if(native)GSRecord(@{@"authorization":result?@"validated":@"failed"});
  });
- if(!result&&error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:1 userInfo:@{NSLocalizedDescriptionKey:GSL(@"GoToHP request failed. Check the account, storage and queue in this app.")}];
+ if(!result&&error){
+  NSString *code=GSEmbeddedRuntimeSnapshot()[@"lastRequestFailure"][@"code"];
+  BOOL storage=[code hasPrefix:@"storage_"];
+  *error=[NSError errorWithDomain:storage?@"Gunshot.Storage":@"Gunshot.IPC" code:1 userInfo:@{NSLocalizedDescriptionKey:storage?GSL(@"Queue storage failed. Waiting for recovery; select the album again after recovery."):GSL(@"GoToHP request failed. Check the account, storage and queue in this app.")}];
+ }
  return result;
 }
