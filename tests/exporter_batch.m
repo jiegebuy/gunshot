@@ -16,6 +16,7 @@ static BOOL SlashHeavy;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
+static dispatch_semaphore_t CloudStarted,CloudRelease;
 static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
@@ -76,6 +77,7 @@ static NSData *OriginalBytes(BOOL movie){
  atomic_store(&CloudCancel,0);BOOL unreadable=resource.unreadable;
  NSData *bytes=OriginalBytes(resource.type==PHAssetResourceTypePairedVideo);Written++;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  if(CloudRelease){dispatch_semaphore_signal(CloudStarted);dispatch_semaphore_wait(CloudRelease,DISPATCH_TIME_FOREVER);}
   [NSThread sleepForTimeInterval:0.01]; // Model an asynchronous PhotoKit/iCloud wait.
   NSError *failure=unreadable?[NSError errorWithDomain:@"private-resource-error" code:99 userInfo:nil]:nil;
   if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=1048576){
@@ -182,6 +184,24 @@ int main(void){@autoreleasepool{
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
  assert(Written==beforeDuplicates+1); // Concurrent callers must still export once.
+ // Every identifier collides under the old hash-based assignment. A slow cloud
+ // resource must not leave eleven otherwise usable preparation lanes idle.
+ NSMutableArray *collisions=[NSMutableArray array];
+ for(NSUInteger i=0;collisions.count<GS_IMPORT_LANES;i++){
+  NSString *identifier=[NSString stringWithFormat:@"cloud-collision-%lu",(unsigned long)i];
+  if(identifier.hash%GS_IMPORT_LANES==0)[collisions addObject:identifier];
+ }
+ CloudStarted=dispatch_semaphore_create(0);CloudRelease=dispatch_semaphore_create(0);
+ NSUInteger beforeCloud=Written;atomic_store(&PeakExports,0);
+ for(NSString *identifier in collisions)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSImportPhotoIdentifier(identifier,@"fixture@example.com",@"original",nil));
+ }});
+ NSUInteger started=0;dispatch_time_t cloudDeadline=dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC);
+ for(;started<GS_IMPORT_LANES;started++)if(dispatch_semaphore_wait(CloudStarted,cloudDeadline))break;
+ for(NSUInteger i=0;i<GS_IMPORT_LANES;i++)dispatch_semaphore_signal(CloudRelease);
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
+ CloudRelease=nil;CloudStarted=nil;
+ assert(started==GS_IMPORT_LANES&&atomic_load(&PeakExports)==GS_IMPORT_LANES&&Written==beforeCloud+GS_IMPORT_LANES);
  // Exercise the failure AFTER one successful chunk. The error must survive the
  // exporter's inner autoreleasepool and ARC's out-parameter writeback on the
  // asset-import queue (the exact retain that faulted on the device).

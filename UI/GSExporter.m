@@ -146,15 +146,20 @@ NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier,NSString *acc
 }
 NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
  if(!localIdentifier.length||!account.length){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:3 userInfo:nil];return nil;}
- // Equal sources use the same lane for lookup/export/seal, including native
- // callbacks. Other lanes can prepare photos while one waits for iCloud.
+ // Reserve any free lane. Hashing sources into fixed lanes strands idle workers
+ // behind an unrelated large iCloud video. Equal sources still cannot overlap.
  static dispatch_queue_t imports[GS_IMPORT_LANES],staging;static dispatch_once_t once;
+ static NSCondition *lanes;static NSMutableIndexSet *available;static NSMutableSet *sources;
  dispatch_once(&once,^{
   for(NSUInteger i=0;i<GS_IMPORT_LANES;i++)imports[i]=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);
   staging=dispatch_queue_create("dev.tqmane.gunshot.asset-staging",DISPATCH_QUEUE_SERIAL);
+  lanes=[NSCondition new];available=[NSMutableIndexSet indexSetWithIndexesInRange:NSMakeRange(0,GS_IMPORT_LANES)];sources=[NSMutableSet set];
  });
+ [lanes lock];
+ while(!available.count||[sources containsObject:localIdentifier])[lanes wait];
+ NSUInteger lane=available.firstIndex;[available removeIndex:lane];[sources addObject:localIdentifier];[lanes unlock];
  __block NSString *job=nil;__block NSError *failure=nil;
- dispatch_sync(imports[localIdentifier.hash%GS_IMPORT_LANES],^{@autoreleasepool{
+ @try {dispatch_sync(imports[lane],^{@autoreleasepool{
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
   NSDictionary *existing=GSRequest(@{@"op":@"source_lookup",@"account":account,@"quality":quality?:@"original",@"sourceID":localIdentifier},&failure);
   if(existing&&[existing[@"found"]boolValue]){
@@ -185,6 +190,8 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
    NSDate *date=[asset.creationDate copy];
    if(files)dispatch_sync(staging,^{job=GSImportFilesWithSource(files,account,quality,date,localIdentifier,authorization,progress,&failure);});
   } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
- }});
+ }});} @finally {
+  [lanes lock];[sources removeObject:localIdentifier];[available addIndex:lane];[lanes broadcast];[lanes unlock];
+ }
  if(error)*error=failure;return job;
 }
