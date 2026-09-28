@@ -104,26 +104,36 @@ int main(void){@autoreleasepool{
  [app beginBackgroundTaskWithName:@"late" expirationHandler:^{hostExpired++;}];
  NoTime=YES;GSFinishBackground(NO,@"test_end");Drain();NoTime=NO;assert(hostExpired==2&&spent.completions==1);
  SetWork(YES,1);GSBeginBackgroundUpload(10);FixtureTask *second=[FixtureTask new];Launch(second);Drain();
+ NSUInteger beforeExpiry=RealNext;
+ for(NSUInteger i=0;i<600;i++)[app beginBackgroundTaskWithName:@"deferred-at-expiry" expirationHandler:nil];
  second.expirationHandler();Drain();assert(Stops==1&&second.completions==1&&!second.success);
+ assert(RealNext==beforeExpiry); // Expired grants must not hand back fresh UIKit assertions.
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);
+ Foreground();
  GSBeginBackgroundUpload(10);void (^late)(id<GSContinuedTask>)=[Launch copy];
  GSBeginBackgroundUpload(10);FixtureTask *stale=[FixtureTask new];late(stale);assert(stale.completions==1&&!stale.success&&!GSTask);
  ShortExpiration();assert(Stops==2&&[GSBackgroundUploadSnapshot()[@"status"]isEqual:@"expired"]);
  Reject=YES;GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"rejected"]);
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);GSFinishBackground(NO,@"test_end");
  Configured=NO;GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"foreground_only"]);GSFinishBackground(NO,@"test_end");
- // Always-on expiry guard: a task whose owner ignores expiry is ended for it, a
- // task begun once the budget is spent is expired the same way, and the owner's
- // own late end is not forwarded twice.
+ // Expiry cleanup must finish synchronously: UIKit may suspend the process as
+ // soon as the handler returns. Reentrant begin attempts must not create a new
+ // assertion (the device's 0x2182BAD2 termination left assertion 543 alive).
  Foreground();
  __block NSUInteger ignored=0;
- UIBackgroundTaskIdentifier stuck=[app beginBackgroundTaskWithName:@"stuck" expirationHandler:^{ignored++;}];
- void (^uikitExpiry)(void)=RealTasks[@(stuck)];uikitExpiry();assert(ignored==1&&RealTasks[@(stuck)]);
+ UIBackgroundTaskIdentifier sibling=[app beginBackgroundTaskWithName:@"sibling" expirationHandler:nil];
+ __block UIBackgroundTaskIdentifier reentrant=0;
+ UIBackgroundTaskIdentifier stuck=[app beginBackgroundTaskWithName:@"stuck" expirationHandler:^{ignored++;reentrant=[app beginBackgroundTaskWithName:@"retry-from-expiry" expirationHandler:^{ignored++;}];}];
+ void (^uikitExpiry)(void)=RealTasks[@(stuck)];uikitExpiry();
+ assert(ignored==1&&!RealTasks[@(stuck)]&&!RealTasks[@(sibling)]&&reentrant==UIBackgroundTaskInvalid);
+ NSUInteger beforeLate=RealNext;
  UIBackgroundTaskIdentifier spentTask=[app beginBackgroundTaskWithName:@"spent" expirationHandler:nil];
- Wait(2.5);assert(!RealTasks[@(stuck)]&&!RealTasks[@(spentTask)]);
+ assert(spentTask==UIBackgroundTaskInvalid&&RealNext==beforeLate);
+ for(NSUInteger i=0;i<600;i++)assert([app beginBackgroundTaskWithExpirationHandler:^{ignored++;}]==UIBackgroundTaskInvalid);
+ assert(RealNext==beforeLate&&ignored==1); // Rejected begins never schedule expiration callbacks.
  NSUInteger forced=ShortEnds;[app endBackgroundTask:stuck];assert(ShortEnds==forced);
  NSDictionary *guard=GSBackgroundUploadSnapshot()[@"expiryGuard"];
- assert([guard[@"forcedEnds"]unsignedIntegerValue]>=2&&[guard[@"lateExpired"]unsignedIntegerValue]>=1&&[guard[@"forcedCallers"]count]>=1);
+ assert([guard[@"forcedEnds"]unsignedIntegerValue]>=2&&[guard[@"lateExpired"]unsignedIntegerValue]>=1&&[guard[@"rejectedLate"]unsignedIntegerValue]>=602&&[guard[@"forcedCallers"]count]>=1);
  // Returning to the foreground closes the expiry window for new tasks.
  Foreground();
  UIBackgroundTaskIdentifier fresh=[app beginBackgroundTaskWithName:@"fresh" expirationHandler:nil];Wait(2.5);assert(RealTasks[@(fresh)]);

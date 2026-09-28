@@ -46,9 +46,9 @@ static BOOL GSPolling;
 // - While our continued-processing grant holds the process, dasd already keeps
 //   it running: account begin/end locally, and hand still-open tasks back to
 //   UIKit when the grant ends, restoring their expiry.
-// - Always: once a task's expiration handler has run, end the task if its owner
-//   has not done so within a second, and expire tasks begun after the budget
-//   is spent the same way. The process is then suspended, as iOS intends.
+// - Always: finish expired tasks before returning to UIKit, and reject new
+//   assertions once the budget is spent. A delayed cleanup can never run if
+//   iOS suspends us first, and a retrying owner must not reopen the assertion.
 @interface GSTaskRecord : NSObject
 @property UIBackgroundTaskIdentifier identifier; // UIKit ID once begin returns
 @property(copy) void (^handler)(void);
@@ -57,7 +57,6 @@ static BOOL GSPolling;
 @end
 @implementation GSTaskRecord @end
 static const UIBackgroundTaskIdentifier GSDeferredBase=(UIBackgroundTaskIdentifier)1<<40;
-static const NSTimeInterval GSExpiryGrace=1;
 static NSObject *GSDeferredLock;
 static BOOL GSDeferring,GSExpiring;
 static NSMutableDictionary<NSNumber *,NSArray *> *GSDeferred; // local ID -> @[name, handler]
@@ -65,12 +64,11 @@ static NSMutableDictionary<NSNumber *,NSNumber *> *GSHandedBack; // local ID -> 
 static NSMutableDictionary<NSNumber *,GSTaskRecord *> *GSLive; // UIKit ID -> record
 static NSMutableDictionary<NSString *,NSNumber *> *GSForcedCallers;
 static NSMutableSet<NSNumber *> *GSForcedIDs; // force-ended; the owner's later end is dropped
-static NSUInteger GSDeferredNext,GSDeferredTotal,GSHandedBackTotal,GSForcedEnds,GSLateExpired,GSExpiryWindows;
+static NSUInteger GSDeferredNext,GSDeferredTotal,GSHandedBackTotal,GSForcedEnds,GSLateExpired,GSExpiryWindows,GSRejectedLate;
 static UIBackgroundTaskIdentifier (*GSOriginalBeginNamed)(id,SEL,NSString *,void (^)(void));
 static UIBackgroundTaskIdentifier (*GSOriginalBegin)(id,SEL,void (^)(void));
 static void (*GSOriginalEnd)(id,SEL,UIBackgroundTaskIdentifier);
 static void GSExpireTask(GSTaskRecord *record,BOOL late);
-static void GSAfterGrace(dispatch_block_t block){dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(GSExpiryGrace*NSEC_PER_SEC)),dispatch_get_main_queue(),block);}
 static NSString *GSCallerKey(NSArray<NSNumber *> *callers){
  // First frames outside this dylib and the system task plumbing name the owner.
  Dl_info own={0};dladdr((const void *)GSCallerKey,&own);
@@ -109,11 +107,12 @@ static void GSExpireTask(GSTaskRecord *record,BOOL late){
   if(!GSExpiring){GSExpiring=YES;GSExpiryWindows++;sweep=YES;}
  }
  // Tasks begun around the expiry warning may never see a handler; expire them too.
- if(sweep)GSAfterGrace(^{GSSweepExpiring();});
  if(record.handler)record.handler();
- GSAfterGrace(^{GSForceEnd(record);});
+ GSForceEnd(record);
+ if(sweep)GSSweepExpiring();
 }
 static UIBackgroundTaskIdentifier GSBeginReal(id app,BOOL named,NSString *name,void (^handler)(void)){
+ @synchronized(GSDeferredLock){if(GSExpiring){GSRejectedLate++;return UIBackgroundTaskInvalid;}}
  GSTaskRecord *record=[GSTaskRecord new];record.identifier=UIBackgroundTaskInvalid;record.handler=handler;
  NSArray *stack=NSThread.callStackReturnAddresses;record.callers=[stack subarrayWithRange:NSMakeRange(0,MIN((NSUInteger)12,stack.count))];
  void (^expire)(void)=^{GSExpireTask(record,NO);};
@@ -122,7 +121,7 @@ static UIBackgroundTaskIdentifier GSBeginReal(id app,BOOL named,NSString *name,v
  if(real==UIBackgroundTaskInvalid)return real;
  BOOL late;
  @synchronized(GSDeferredLock){record.identifier=real;GSLive[@(real)]=record;late=GSExpiring;}
- if(late)GSAfterGrace(^{GSExpireTask(record,YES);}); // The budget is already spent.
+ if(late)GSExpireTask(record,YES); // Expiry raced the begin call; do not delay cleanup.
  return real;
 }
 static UIBackgroundTaskIdentifier GSDeferTask(NSString *name,void (^handler)(void)){
@@ -263,9 +262,13 @@ void GSBeginBackgroundUpload(NSUInteger count){
   BOOL registered=[scheduler registerForTaskWithIdentifier:GSIdentifier usingQueue:dispatch_get_main_queue() launchHandler:^(id<GSContinuedTask> task){
    if(epoch!=GSEpoch){[task setTaskCompletedWithSuccess:NO];return;}
    GSTask=task;
-   if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;}
+   if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;GSExpiring=NO;}
    task.expirationHandler=^{dispatch_async(dispatch_get_main_queue(),^{
     if(epoch!=GSEpoch)return;
+    // The continued-processing budget is spent too. Handing hundreds of host
+    // tasks back as fresh UIKit assertions here creates another expiry storm.
+    @synchronized(GSDeferredLock){if(!GSExpiring){GSExpiring=YES;GSExpiryWindows++;}}
+    GSSweepExpiring();
     GSStopBatchImport(YES);GSFinishBackground(NO,@"expired");
    });};
    GSBackgroundRecord(@{@"granted":@YES,@"status":@"running"});GSEndShortTask();GSPollBackground();
@@ -292,7 +295,7 @@ NSDictionary *GSBackgroundUploadSnapshot(void){
  if(GSDeferredLock)@synchronized(GSDeferredLock){
   NSMutableDictionary *merged=[snapshot mutableCopy];
   if(GSDeferredTotal)merged[@"deferredTasks"]=@{@"begun":@(GSDeferredTotal),@"open":@(GSDeferred.count),@"handedBack":@(GSHandedBackTotal),@"handedBackOpen":@(GSHandedBack.count)};
-  if(GSExpiryWindows)merged[@"expiryGuard"]=@{@"windows":@(GSExpiryWindows),@"forcedEnds":@(GSForcedEnds),@"lateExpired":@(GSLateExpired),@"forcedCallers":[GSForcedCallers copy]};
+  if(GSExpiryWindows)merged[@"expiryGuard"]=@{@"windows":@(GSExpiryWindows),@"forcedEnds":@(GSForcedEnds),@"lateExpired":@(GSLateExpired),@"rejectedLate":@(GSRejectedLate),@"forcedCallers":[GSForcedCallers copy]};
   snapshot=merged;
  }
 #endif
