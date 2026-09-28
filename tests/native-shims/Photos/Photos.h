@@ -19,6 +19,7 @@ typedef NS_ENUM(NSInteger, PHAssetResourceType) { PHAssetResourceTypePhoto=1, PH
 @end
 @interface PHAssetResourceRequestOptions : NSObject
 @property(nonatomic) BOOL networkAccessAllowed;
+@property(nonatomic,copy) void (^progressHandler)(double);
 @end
 @interface PHAssetResourceManager : NSObject
 + (instancetype)defaultManager;

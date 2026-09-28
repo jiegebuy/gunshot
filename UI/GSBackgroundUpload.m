@@ -37,6 +37,7 @@ static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
 static int64_t GSProgressUnits;
+static unsigned long long GSExportedBytes,GSCloudProgressUnits;
 static BOOL GSPolling;
 // Google Photos begins UIKit background tasks continuously while it runs, and
 // one of them is begun again at the instant the background budget expires and
@@ -241,7 +242,7 @@ static void GSEndShortTask(void){
  if(task!=UIBackgroundTaskInvalid)[UIApplication.sharedApplication endBackgroundTask:task];
 }
 static NSUInteger GSFinishBackgroundWithExpiry(BOOL success,NSString *status,BOOL expired){
- NSUInteger epoch=++GSEpoch;[GSTimer invalidate];GSTimer=nil;
+ NSUInteger epoch=++GSEpoch;[GSTimer invalidate];GSTimer=nil;GSPolling=NO;
  id<GSContinuedTask> task=GSTask;GSTask=nil;
  NSString *identifier=GSIdentifier;GSIdentifier=nil;
  UIBackgroundTaskIdentifier shortTask=GSShortTask;GSShortTask=UIBackgroundTaskInvalid;
@@ -262,7 +263,20 @@ static NSUInteger GSFinishBackgroundWithExpiry(BOOL success,NSString *status,BOO
  return epoch;
 }
 static NSUInteger GSFinishBackground(BOOL success,NSString *status){return GSFinishBackgroundWithExpiry(success,status,NO);}
+static int64_t GSBackgroundTotal(void){return (int64_t)MAX((NSUInteger)1,MIN(GSCount,(NSUInteger)(INT64_MAX/2000)))*2000;}
+static void GSUpdatePreparationProgress(void){
+ if(!GSTask)return;
+ NSDictionary *batch=GSBatchImportSnapshot();
+ unsigned long long bytes=[batch[@"exportedBytes"]unsignedLongLongValue],cloud=[batch[@"cloudProgressUnits"]unsignedLongLongValue];
+ BOOL moved=bytes>GSExportedBytes||cloud>GSCloudProgressUnits;
+ GSExportedBytes=MAX(GSExportedBytes,bytes);GSCloudProgressUnits=MAX(GSCloudProgressUnits,cloud);
+ int64_t prepared=(int64_t)MIN(GSCount,[batch[@"processed"]unsignedIntegerValue])*1000;
+ GSProgressUnits=MIN(GSBackgroundTotal()-1,MAX(GSProgressUnits+(moved?1:0),prepared));
+ GSTask.progress.completedUnitCount=GSProgressUnits;
+}
 static void GSPollBackground(void){
+ // PhotoKit progress must reach dasd even while the upload service is busy.
+ GSUpdatePreparationProgress();
  if(GSPolling)return;GSPolling=YES;NSUInteger epoch=GSEpoch;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   // Read the producer first: a finished batch has sealed its last job before
@@ -274,7 +288,7 @@ static void GSPollBackground(void){
   for(NSDictionary *profile in [summary[@"profiles"]allValues])for(NSString *key in @[@"importing",@"pending",@"preparing",@"uploading",@"committing"])
    outstanding+=[profile[@"states"][key]unsignedIntegerValue];
   dispatch_async(dispatch_get_main_queue(),^{
-   GSPolling=NO;if(epoch!=GSEpoch)return;
+   if(epoch!=GSEpoch)return;GSPolling=NO;
    NSString *reason=batch[@"stopReason"];
    if([reason isEqual:@"account_changed"]||[reason isEqual:@"background_expired"]||[summary[@"conditions"][@"paused"]boolValue]){GSFinishBackground(NO,@"stopped");return;}
    if(!summary)return; // An unavailable service is never treated as completion.
@@ -282,11 +296,10 @@ static void GSPollBackground(void){
    NSUInteger prepared=MIN(GSCount,[batch[@"processed"]unsignedIntegerValue]);
    NSUInteger uploaded=prepared>outstanding?prepared-outstanding:0;
    if(GSTask){
-    // dasd cancels a grant whose progress stops advancing ("marking stalled").
-    // One item can upload for minutes, so advance a unit per poll while bytes
-    // actually move or originals are being prepared; a real stall still stops it.
-    const int64_t scale=1000,total=(int64_t)MAX((NSUInteger)1,GSCount*2)*scale;
-    BOOL active=[summary[@"transport"][@"recentUploadBodyBytesPerSecond"]doubleValue]>0||[batch[@"activePreparations"]unsignedIntegerValue]>0;
+    // Item counts can stand still during a large upload; only moving bytes
+    // advance intermediate units. A waiting preparation is not progress.
+    const int64_t scale=1000,total=GSBackgroundTotal();
+    BOOL active=[summary[@"transport"][@"recentUploadBodyBytesPerSecond"]doubleValue]>0;
     GSProgressUnits=finished?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
     GSTask.progress.totalUnitCount=total;
     GSTask.progress.completedUnitCount=GSProgressUnits;
@@ -303,7 +316,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  static dispatch_once_t once;dispatch_once(&once,^{GSShortTask=UIBackgroundTaskInvalid;});
  if(!count)return;
  NSUInteger epoch=GSFinishBackground(NO,@"replaced");if(epoch!=GSEpoch)return;
- GSCount=count;GSProgressUnits=0;
+ GSCount=MIN(count,(NSUInteger)(INT64_MAX/2000));GSProgressUnits=0;GSExportedBytes=0;GSCloudProgressUnits=0;
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
  UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
   if(epoch!=GSEpoch)return;
@@ -322,7 +335,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
   GSIdentifier=[prefix stringByAppendingFormat:@".%@",NSUUID.UUID.UUIDString];
   BOOL registered=[scheduler registerForTaskWithIdentifier:GSIdentifier usingQueue:dispatch_get_main_queue() launchHandler:^(id<GSContinuedTask> task){
    if(epoch!=GSEpoch){[task setTaskCompletedWithSuccess:NO];return;}
-   GSTask=task;
+   GSTask=task;task.progress.totalUnitCount=GSBackgroundTotal();task.progress.completedUnitCount=GSProgressUnits;
    if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;GSExpiring=NO;GSBudgetGeneration++;}
    task.expirationHandler=^{
     void (^expire)(void)=^{if(epoch==GSEpoch)GSFinishBackgroundWithExpiry(NO,@"expired",YES);};
@@ -340,7 +353,10 @@ void GSBeginBackgroundUpload(NSUInteger count){
    if(!GSTask)GSBackgroundRecord(@{@"granted":@NO,@"status":accepted?@"requested":@"rejected",@"errorCode":@(error.code)});
   }else GSBackgroundRecord(@{@"granted":@NO,@"status":@"registration_failed"});
  }
- if(epoch==GSEpoch)GSTimer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){if(epoch==GSEpoch)GSPollBackground();}];
+ if(epoch==GSEpoch){
+  GSTimer=[NSTimer timerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){if(epoch==GSEpoch)GSPollBackground();}];
+  [NSRunLoop.mainRunLoop addTimer:GSTimer forMode:NSRunLoopCommonModes];
+ }
 #endif
 }
 void GSInstallBackgroundTaskGuard(void){

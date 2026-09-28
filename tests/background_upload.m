@@ -14,6 +14,7 @@ static BOOL Configured=YES,Reject=NO,NoTime=NO;
 static void (^Launch)(id<GSContinuedTask>);
 static void (^ShortExpiration)(void);
 static NSDictionary *Batch,*Summary;
+static dispatch_semaphore_t SummaryStarted,SummaryRelease;
 static NSUInteger Stops,ShortEnds,RequestCancels,RealNext,ShortNext;
 static NSMutableDictionary *RealTasks; // UIKit ID -> expiration handler
 static NSObject *RealLock;
@@ -71,10 +72,13 @@ static UIBackgroundTaskIdentifier FixtureBegin(BOOL named,NSString *name,void (^
 - (void)updateTitle:(NSString *)title subtitle:(NSString *)subtitle{}
 @end
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
+ NSDictionary *summary;dispatch_semaphore_t started,release;
  @synchronized(RealLock){
   if(SealDuringSummary){SealDuringSummary=NO;Batch=@{@"active":@NO,@"stage":@"finished",@"processed":@10,@"failed":@0};}
-  return Summary;
+  summary=Summary;started=SummaryStarted;release=SummaryRelease;
  }
+ if(release){dispatch_semaphore_signal(started);Await(release);}
+ return summary;
 }
 NSDictionary *GSBatchImportSnapshot(void){@synchronized(RealLock){return Batch;}}
 void GSStopBatchImport(BOOL expired){assert(expired);Stops++;}
@@ -230,6 +234,36 @@ static void TestShortReplacement(void){
  assert(GSTask==replacement&&replacement.completions==0&&GSCount==20&&Stops==stopsAtReplacement);
  GSFinishBackground(YES,@"test_short_end");assert(RawCount()==0);
 }
+static void TestPreparationProgress(void){
+ Foreground();SetWork(YES,1);
+ @synchronized(RealLock){
+  Batch=@{@"active":@YES,@"processed":@0,@"activePreparations":@12};Summary=nil;
+  SummaryStarted=dispatch_semaphore_create(0);SummaryRelease=dispatch_semaphore_create(0);
+ }
+ GSBeginBackgroundUpload(10);FixtureTask *task=[FixtureTask new];Launch(task);
+ assert(task.progress.totalUnitCount==20000&&task.progress.completedUnitCount==0);
+ Await(SummaryStarted);
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"activePreparations":@12,@"cloudProgressUnits":@100};}
+ GSPollBackground();assert(task.progress.completedUnitCount==1&&GSPolling);
+ GSPollBackground();assert(task.progress.completedUnitCount==1);
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"activePreparations":@12,@"cloudProgressUnits":@100,@"exportedBytes":@1048576};}
+ CFRunLoopAddCommonMode(CFRunLoopGetMain(),CFSTR("FixtureTrackingMode"));
+ GSTimer.fireDate=NSDate.date;
+ [NSRunLoop.mainRunLoop runMode:@"FixtureTrackingMode" beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+ assert(task.progress.completedUnitCount==2&&GSPolling);
+ dispatch_semaphore_t oldRelease=SummaryRelease;
+ @synchronized(RealLock){SummaryStarted=dispatch_semaphore_create(0);SummaryRelease=dispatch_semaphore_create(0);Batch=@{@"active":@YES,@"processed":@0};}
+ GSBeginBackgroundUpload(20);FixtureTask *replacement=[FixtureTask new];Launch(replacement);Await(SummaryStarted);
+ dispatch_semaphore_signal(oldRelease);Drain();
+ assert(GSPolling&&replacement.progress.completedUnitCount==0&&task.completions==1);
+ dispatch_semaphore_t release=SummaryRelease;
+ @synchronized(RealLock){SummaryRelease=nil;SummaryStarted=nil;}
+ dispatch_semaphore_signal(release);Drain();assert(!GSPolling&&replacement.completions==0);
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"cloudProgressUnits":@200};}
+ GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1&&replacement.completions==0);
+ GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1);
+ GSFinishBackground(NO,@"test_progress_end");
+}
 int main(void){@autoreleasepool{
  RealLock=[NSObject new];RealTasks=[NSMutableDictionary dictionary];UIApplication *app=UIApplication.sharedApplication;
  SetWork(YES,2);GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"requested"]);
@@ -317,7 +351,7 @@ int main(void){@autoreleasepool{
  TestEarlyExpiration(NO);TestEarlyExpiration(YES);TestWorkerExpiration();
  TestHandBackEndRace();TestHandBackReplacement();TestBeginNotificationReplacement();
  TestForegroundCancellation(NO);TestForegroundCancellation(YES);
- TestDeferredReplacement(NO);TestDeferredReplacement(YES);TestSweepReplacement();TestShortReplacement();
+ TestDeferredReplacement(NO);TestDeferredReplacement(YES);TestSweepReplacement();TestShortReplacement();TestPreparationProgress();
  Foreground();assert(RawCount()==0&&GSDeferred.count==0&&GSHandedBack.count==0&&!GSTask&&!GSTimer);
  NSLog(@"PASS background grant, progress, synchronous raw expiry, pending begin races, hand-back races, foreground cancellation and reentrant epoch isolation");
 }}

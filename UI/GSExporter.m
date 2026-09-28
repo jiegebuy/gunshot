@@ -2,6 +2,7 @@
 #import "GSExporter.h"
 #import "../Shared/IPCProtocol.h"
 #import "GSImportStorage.h"
+#include <math.h>
 
 static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned long long incoming,BOOL limitQueue,
  GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
@@ -50,6 +51,12 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
   NSURL *url=[directory URLByAppendingPathComponent:r.originalFilename.lastPathComponent];
   if([NSFileManager.defaultManager fileExistsAtPath:url.path])return nil;
   PHAssetResourceRequestOptions *options=[PHAssetResourceRequestOptions new];options.networkAccessAllowed=YES;
+  NSObject *progressLock=[NSObject new];__block NSUInteger cloudUnits=0;__block BOOL progressClosed=NO;
+  if(progress)options.progressHandler=^(double fraction){
+   if(!isfinite(fraction)||fraction<=0)return;
+   NSUInteger units=(NSUInteger)(MIN(1.0,fraction)*1000);
+   @synchronized(progressLock){if(!progressClosed&&units>cloudUnits){NSUInteger delta=units-cloudUnits;cloudUnits=units;progress(@{@"cloudProgressDelta":@(delta)});}}
+  };
   if(![NSFileManager.defaultManager createFileAtPath:url.path contents:nil attributes:@{NSFilePosixPermissions:@0600}])return nil;
   NSFileHandle *file=[NSFileHandle fileHandleForWritingAtPath:url.path];if(!file)return nil;
   dispatch_semaphore_t done=dispatch_semaphore_create(0);__block NSError *exportError=nil;
@@ -67,7 +74,11 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
    }
    if(![file writeData:data error:&exportError]){cancel();return;}
    exported+=data.length;
-  }} completionHandler:^(NSError *e){if(!exportError)exportError=e;dispatch_semaphore_signal(done);}];
+   if(progress&&data.length)progress(@{@"exportedBytesDelta":@(data.length)});
+  }} completionHandler:^(NSError *e){
+   @synchronized(progressLock){progressClosed=YES;}
+   if(!exportError)exportError=e;dispatch_semaphore_signal(done);
+  }];
   [requestLock lock];requestID=started;BOOL cancelNow=cancelWanted;[requestLock unlock];if(cancelNow)[manager cancelDataRequest:started];
   while(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC))!=0){
    // An iCloud request may produce no data for a long time. Cancellation must

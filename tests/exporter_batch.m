@@ -4,6 +4,7 @@
 #import "../UI/GSImportStorage.h"
 #include <assert.h>
 #include <stdatomic.h>
+#include <math.h>
 
 // Exercise the real PhotoKit exporter, 32 KiB IPC importer and batch worker.
 // Opaque bytes stand in for PhotoKit originals; no codec or network is mocked
@@ -77,8 +78,13 @@ static NSData *OriginalBytes(BOOL movie){
  atomic_store(&CloudCancel,0);BOOL unreadable=resource.unreadable;
  NSData *bytes=OriginalBytes(resource.type==PHAssetResourceTypePairedVideo);Written++;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  if(options.progressHandler){
+   options.progressHandler(NAN);options.progressHandler(INFINITY);options.progressHandler(-1);
+   options.progressHandler(0.25);options.progressHandler(0.25);options.progressHandler(0.1);options.progressHandler(0.5);
+  }
   if(CloudRelease){dispatch_semaphore_signal(CloudStarted);dispatch_semaphore_wait(CloudRelease,DISPATCH_TIME_FOREVER);}
   [NSThread sleepForTimeInterval:0.01]; // Model an asynchronous PhotoKit/iCloud wait.
+  if(options.progressHandler)options.progressHandler(1.0);
   NSError *failure=unreadable?[NSError errorWithDomain:@"private-resource-error" code:99 userInfo:nil]:nil;
   if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=1048576){
    handler([bytes subdataWithRange:NSMakeRange(offset,MIN(1048576,bytes.length-offset))]);
@@ -161,6 +167,7 @@ static NSDictionary *Run(void){
 int main(void){@autoreleasepool{
  SourceJobs=[NSMutableDictionary dictionary];
  NSDictionary *result=Run();assert(Queued==60&&Written==61&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
+ assert([result[@"exportedBytes"]unsignedLongLongValue]==61ULL*FixtureSize&&[result[@"cloudProgressUnits"]unsignedIntegerValue]==61000);
  NSUInteger writtenAfterFirst=Written;result=Run();
  assert(Queued==60&&Written==writtenAfterFirst&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
  [SourceJobs removeAllObjects];
@@ -266,6 +273,22 @@ int main(void){@autoreleasepool{
   assert(GSImportPhotoIdentifier(@"after-space-recovered",@"fixture@example.com",@"original",&error));assert(!error);
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
+ CloudStarted=dispatch_semaphore_create(0);CloudRelease=dispatch_semaphore_create(0);
+ __block NSDictionary *cloudResult=nil;
+ assert(GSStartBatchImport(1,@"album",YES,GSPhotoIdentifierProvider(@[@"cloud-progress"]),@"fixture@example.com",@"fixture",nil,^(NSDictionary *state){cloudResult=state;}));
+ NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];BOOL cloudStarted=NO;
+ while(!cloudStarted&&deadline.timeIntervalSinceNow>0){
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+  cloudStarted=dispatch_semaphore_wait(CloudStarted,DISPATCH_TIME_NOW)==0;
+ }
+ assert(cloudStarted);
+ NSDictionary *preparing=GSBatchImportSnapshot();
+ assert([preparing[@"cloudProgressUnits"]unsignedIntegerValue]==500&&[preparing[@"exportedBytes"]unsignedLongLongValue]==0&&[preparing[@"processed"]unsignedIntegerValue]==0);
+ dispatch_semaphore_signal(CloudRelease);deadline=[NSDate dateWithTimeIntervalSinceNow:5];
+ while(!cloudResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+ assert(cloudResult&&[cloudResult[@"queued"]unsignedIntegerValue]==1&&[cloudResult[@"exportedBytes"]unsignedLongLongValue]==FixtureSize&&[cloudResult[@"cloudProgressUnits"]unsignedIntegerValue]==1000);
+ CloudStarted=nil;CloudRelease=nil;
+ NSLog(@"PASS real cloud progress before data delivery, monotonic fractions and concurrent byte aggregation");
  NSLog(@"PASS storage backpressure, automatic resume, paused uploads, cancellation, oversized isolation and low-space stream cancellation/recovery");
  NSLog(@"PASS slash-heavy originals fit the actual JSON transport limit with exact bytes");
  NSLog(@"PASS late chunk error lifetime, cancellation, recovery and 25000 source-deduplicated imports");

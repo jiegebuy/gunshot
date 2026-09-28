@@ -20,6 +20,14 @@ void GSStopBatchImport(BOOL backgroundExpired){
  @synchronized(GSImportBatch.class){GSCurrentBatch.stopReason=backgroundExpired?@"background_expired":@"cancelled";}
 }
 static void GSRecordBatch(NSDictionary *snapshot){@synchronized(GSImportBatch.class){GSLastBatch=[snapshot copy];}}
+static void GSRecordPreparation(NSMutableDictionary *state,NSDictionary *event){
+ for(NSString *key in event){
+  NSString *counter=[key isEqual:@"exportedBytesDelta"]?@"exportedBytes":[key isEqual:@"cloudProgressDelta"]?@"cloudProgressUnits":nil;
+  if(counter)state[counter]=@([state[counter]unsignedLongLongValue]+[event[key]unsignedLongLongValue]);
+  else state[key]=event[key];
+ }
+ GSRecordBatch(state);
+}
 static NSString *GSCheckBatchAccount(GSImportBatch *batch){
  if(batch.stopReason)return batch.stopReason;
  if(batch.identity){
@@ -51,7 +59,7 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
    for(NSUInteger attempt=0;attempt<3&&!reason&&[item isKindOfClass:NSString.class];attempt++){
     error=nil;job=GSImportPhotoIdentifierWithProgress(item,batch.account,quality,
     ^BOOL{return GSCheckBatchAccount(batch)==nil;},^(NSDictionary *storage){
-     @synchronized(lock){[state addEntriesFromDictionary:storage];GSRecordBatch(state);}
+     @synchronized(lock){GSRecordPreparation(state,storage);}
     },&error);
     if(job||![error.domain isEqual:@"Gunshot.IPC"])break;
     reason=GSCheckBatchAccount(batch);
@@ -121,7 +129,7 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
     NSString *job=[item isKindOfClass:NSString.class]?GSImportPhotoIdentifierWithProgress(item,batch.account,quality,^BOOL{
      return GSCheckBatchAccount(batch)==nil;
     },^(NSDictionary *storage){
-     [state addEntriesFromDictionary:storage];GSRecordBatch(state);
+     GSRecordPreparation(state,storage);
      if(progress){NSDictionary *snapshot=[state copy];dispatch_async(dispatch_get_main_queue(),^{progress(snapshot);});}
     },&error):nil;
     if(!reason)reason=GSCheckBatchAccount(batch);
@@ -151,7 +159,7 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
     if(!reason&&files){
      state[@"stage"]=@"queueing";GSRecordBatch(state);
      NSString *job=GSImportFilesWithProgress(files,batch.account,quality,date,^BOOL{return GSCheckBatchAccount(batch)==nil;},^(NSDictionary *storage){
-      [state addEntriesFromDictionary:storage];GSRecordBatch(state);
+      GSRecordPreparation(state,storage);
       if(progress){NSDictionary *snapshot=[state copy];dispatch_async(dispatch_get_main_queue(),^{progress(snapshot);});}
      },&error);
      if(!reason)reason=GSCheckBatchAccount(batch);
