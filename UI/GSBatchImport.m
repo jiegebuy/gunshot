@@ -68,9 +68,10 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
   while(YES){@autoreleasepool{
    id item=nil;
    @synchronized(lock){
-    if(batch.stopReason||(nextPhoto>=photos.count&&nextVideo>=videos.count))break;
-    // Half the workers keep fetching photos even when videos wait on cloud/storage.
-    BOOL video=nextVideo<videos.count&&(nextPhoto>=photos.count||worker<workers/2);
+    if(batch.stopReason||(nextPhoto>=photos.count&&(worker!=0||nextVideo>=videos.count)))break;
+    // PhotoKit may cache the whole video before delivering any bytes. Bound
+    // that unmeasured disk usage to one video; photos keep independent workers.
+    BOOL video=worker==0&&nextVideo<videos.count;
     item=video?videos[nextVideo++]:photos[nextPhoto++];active++;state[@"activePreparations"]=@(active);
     state[@"stage"]=@"exporting";GSRecordBatch(state);
    }

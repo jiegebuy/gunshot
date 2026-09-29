@@ -66,7 +66,7 @@ func (e *Engine) HandleJSON(b []byte, role string) []byte {
 	defer e.mu.Unlock()
 	held := time.Now()
 	defer func() { e.recordLock(r.Op, held.Sub(waited), time.Since(held)) }()
-	if e.fault && r.Op != "upload_summary" && r.Op != "list" && r.Op != "options" && r.Op != "ping" && r.Op != "conditions" {
+	if e.fault && r.Op != "upload_summary" && r.Op != "list" && r.Op != "options" && r.Op != "ping" && r.Op != "conditions" && r.Op != "accounts" && r.Op != "source_lookup" && r.Op != "import_capacity" {
 		return response(nil, errStorageFault)
 	}
 	data, err := e.handle(r, role)

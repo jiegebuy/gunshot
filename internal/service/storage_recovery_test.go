@@ -41,7 +41,24 @@ func TestStorageRecoveryRequiresDurabilityAndPreservesCommitUncertainty(t *testi
 	if err := json.Unmarshal(e.HandleJSON([]byte(`{"op":"upload_summary"}`), "settings"), &summary); err != nil || !summary.OK || !summary.Data.Engine.StorageFault {
 		t.Fatal("storage failure hid the live diagnostics", err)
 	}
-	if !strings.Contains(string(e.HandleJSON([]byte(`{"op":"accounts"}`), "settings")), "storage_fault") {
+	for _, op := range []string{"accounts", "import_capacity"} {
+		var reply struct {
+			OK   bool
+			Data struct{ StorageFault bool }
+		}
+		request, err := json.Marshal(Request{Op: op})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := e.HandleJSON(request, "googlephotos")
+		if err := json.Unmarshal(raw, &reply); err != nil || !reply.OK {
+			t.Fatalf("storage fault hid read-only %s: %s (%v)", op, raw, err)
+		}
+		if op == "import_capacity" && !reply.Data.StorageFault {
+			t.Fatal("capacity did not report storage fault to preparation workers")
+		}
+	}
+	if !strings.Contains(string(e.HandleJSON([]byte(`{"op":"configure"}`), "settings")), "storage_fault") {
 		t.Fatal("mutation/import gate did not report storage fault")
 	}
 	if e.recoverStorage(time.Now()) || !e.fault {
@@ -61,6 +78,9 @@ func TestStorageRecoveryRequiresDurabilityAndPreservesCommitUncertainty(t *testi
 	e.Tick()
 	if e.fault || j.State != "cancelled" || j.Error != "import_interrupted" {
 		t.Fatal("partial import not safely recovered")
+	}
+	if e.importCapacity()["storageFault"] != false {
+		t.Fatal("capacity remained faulted after durable recovery")
 	}
 	if _, err := Open(e.root, nil); err != nil {
 		t.Fatal("recovered state is not durable", err)

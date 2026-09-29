@@ -31,11 +31,8 @@ static inline unsigned long long GSStorageFreeBytes(NSURL *directory){
  extern unsigned long long GSFixtureFreeBytes(void);
  return GSFixtureFreeBytes();
 #else
- // User-requested imports can use capacity the OS makes available by purging
- // expendable system caches. A raw filesystem free count excludes that space.
- NSURL *fresh=[NSURL fileURLWithPath:directory.path];
- NSNumber *available=nil;
- if([fresh getResourceValue:&available forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil]&&available.longLongValue>0)return available.unsignedLongLongValue;
+ // Purgeable estimates are not a physical reservation. Concurrent iCloud
+ // downloads can consume that capacity before the queue writes its next chunk.
  NSDictionary *attributes=[NSFileManager.defaultManager attributesOfFileSystemForPath:directory.path error:nil];
  return [attributes[NSFileSystemFreeSize]unsignedLongLongValue];
 #endif

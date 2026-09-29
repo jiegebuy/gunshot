@@ -59,5 +59,5 @@ func (e *Engine) importCapacity() map[string]any {
 			releasable += j.Total
 		}
 	}
-	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused}
+	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused, "storageFault": e.fault}
 }

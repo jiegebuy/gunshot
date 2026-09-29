@@ -25,7 +25,7 @@ static dispatch_semaphore_t LargeCopyStarted,LargeCopyRelease;
 static dispatch_semaphore_t SmallCopyStarted,SmallCopyRelease;
 static atomic_bool LargeBuffered;
 static atomic_ullong FreeOverride;
-static NSUInteger CapacityWaits,PausedWaits,StorageEvents,CloudCancelled;
+static NSUInteger CapacityWaits,PausedWaits,FaultWaits,StorageEvents,CloudCancelled;
 static atomic_ulong FreeReads;
 static BOOL LowSpace,LowSpaceDuringExport;
 static atomic_int CloudCancel;
@@ -144,8 +144,8 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
  if([op isEqual:@"import_capacity"]){
   if(LargeBuffered)return @{@"retainedBytes":@(9ULL<<30),@"bufferedBytes":@(9ULL<<30),@"smallBufferedBytes":@0,@"bufferedJobs":@1,@"releasableBytes":@0,@"paused":@NO};
-  BOOL full=CapacityWaits>0,paused=PausedWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;
-  return @{@"retainedBytes":@(full?(8ULL<<30):0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?(8ULL<<30):0),@"paused":paused?@YES:@NO};
+  BOOL full=CapacityWaits>0,paused=PausedWaits>0,fault=FaultWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;if(fault)FaultWaits--;
+  return @{@"retainedBytes":@(full?(8ULL<<30):0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?(8ULL<<30):0),@"paused":@(paused),@"storageFault":@(fault)};
  }
  if([op isEqual:@"accounts"])return @{@"selected":@"fixture@example.com"};
  if([op isEqual:@"options"])return @{@"quality":@"original",@"concurrent":@8};
@@ -231,6 +231,72 @@ static void TestIndependentCopies(BOOL constrained){
   FreeOverride=0;
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
+static void TestExportReservations(void){
+ NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString]isDirectory:YES];
+ assert([NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]);
+ NSURL *small=[directory URLByAppendingPathComponent:@"original.HEIC"];
+ assert([ResourceBytes(@"original.HEIC")writeToURL:small atomically:NO]);
+ dispatch_semaphore_t exported=dispatch_semaphore_create(0);
+ dispatch_semaphore_t release[2]={dispatch_semaphore_create(0),dispatch_semaphore_create(0)};
+ dispatch_semaphore_t done[2]={dispatch_semaphore_create(0),dispatch_semaphore_create(0)};
+ dispatch_group_t group=dispatch_group_create();
+ for(NSUInteger i=0;i<2;i++){
+  dispatch_semaphore_t resume=release[i],finished=done[i];
+  dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+   __block unsigned long long bytes=0;
+   assert(GSImportPhotoIdentifierWithProgress([NSString stringWithFormat:@"reservation-%lu",(unsigned long)i],@"fixture@example.com",@"original",nil,^(NSDictionary *event){
+    bytes+=[event[@"exportedBytesDelta"]unsignedLongLongValue];
+    if(event[@"exportedBytesDelta"]&&bytes==FixtureSize){
+     dispatch_semaphore_signal(exported);
+     assert(dispatch_semaphore_wait(resume,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+    }
+   },nil));
+   dispatch_semaphore_signal(finished);
+  }});
+ }
+ for(NSUInteger i=0;i<2;i++)assert(dispatch_semaphore_wait(exported,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ dispatch_semaphore_t inspected=dispatch_semaphore_create(0);
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  PausedWaits=1;__block BOOL observed=NO;
+  assert(GSImportFilesWithProgress(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil,^(NSDictionary *event){
+   if([event[@"stage"]isEqual:@"waiting_upload_resume"]){
+    assert([event[@"exportCopyReservedBytes"]unsignedLongLongValue]==2ULL*FixtureSize);
+    assert([event[@"stagingReservedBytes"]unsignedLongLongValue]==0);observed=YES;
+   }
+  },nil));
+  assert(observed);
+  // An unreserved caller must release the copy lane instead of waiting for
+  // exported originals that need that lane to release their reservations.
+  FreeOverride=GSStorageReserve+3ULL*FixtureSize-1;NSError *error=nil;
+  assert(!GSImportFiles(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],&error));
+  assert([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError);
+  dispatch_semaphore_signal(inspected);
+ }});
+ assert(dispatch_semaphore_wait(inspected,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ // Exactly enough space for the two reserved copies, with no second reservation.
+ FreeOverride=GSStorageReserve+2ULL*FixtureSize;
+ for(NSUInteger i=0;i<2;i++){
+  dispatch_semaphore_signal(release[i]);
+  assert(dispatch_semaphore_wait(done[i],dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ }
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);FreeOverride=0;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  __block BOOL allowed=YES;NSError *error=nil;
+  assert(!GSImportPhotoIdentifierWithProgress(@"reservation-cancel",@"fixture@example.com",@"original",^BOOL{return allowed;},^(NSDictionary *event){
+   if([event[@"exportedBytesDelta"]unsignedLongLongValue])allowed=NO;
+  },&error));
+  assert([error.domain isEqual:@"Gunshot.Authorization"]);
+  assert(!GSImportPhotoIdentifierWithProgress(@"reservation-storage-fault",@"fixture@example.com",@"original",nil,^(NSDictionary *event){
+   if([event[@"exportedBytesDelta"]unsignedLongLongValue])FaultWaits=1;
+  },&error));
+  assert([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError&&FaultWaits==0);
+  // Failed exports and completed copies must both release all reservations.
+  FreeOverride=GSStorageReserve+FixtureSize;
+  assert(GSImportFiles(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],&error));assert(!error);FreeOverride=0;
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
 static void TestConcurrentSpaceLoss(void){
@@ -375,6 +441,11 @@ int main(void){@autoreleasepool{
   PausedWaits=2;StorageEvents=0;
   assert(GSImportPhotoIdentifierWithProgress(@"pause-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){if([s[@"stage"]isEqual:@"waiting_upload_resume"])StorageEvents++;},nil));
   assert(PausedWaits==0&&StorageEvents==2);
+  FaultWaits=2;StorageEvents=0;NSUInteger beforeFault=Written;
+  assert(GSImportPhotoIdentifierWithProgress(@"storage-fault-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){
+   if([s[@"stage"]isEqual:@"waiting_storage"]){assert([s[@"storageFault"]boolValue]&&Written==beforeFault);StorageEvents++;}
+  },nil));
+  assert(FaultWaits==0&&StorageEvents==2&&Written==beforeFault+1);
   CapacityWaits=20;NSError *error=nil;
   assert(!GSImportPhotoIdentifierWithProgress(@"cancel-capacity",@"fixture@example.com",@"original",^BOOL{return CapacityWaits>18;},nil,&error));
   assert([error.domain isEqual:@"Gunshot.Authorization"]);CapacityWaits=0;
@@ -404,7 +475,8 @@ int main(void){@autoreleasepool{
  while(!cloudResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(cloudResult&&[cloudResult[@"queued"]unsignedIntegerValue]==1&&[cloudResult[@"exportedBytes"]unsignedLongLongValue]==FixtureSize&&[cloudResult[@"cloudProgressUnits"]unsignedIntegerValue]==1000);
  CloudStarted=nil;CloudRelease=nil;
- TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();
+ TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();TestExportReservations();
+ NSLog(@"PASS aggregate export reservations, atomic copy transfer, blocked lane deferral and export cleanup after cancellation/storage fault");
  NSLog(@"PASS small copies bypass blocked large copies, bounded photo capacity and physical reservation cleanup");
  NSLog(@"PASS real cloud progress before data delivery, monotonic fractions and concurrent byte aggregation");
  NSLog(@"PASS storage backpressure, automatic resume, paused uploads, cancellation, oversized isolation and low-space stream cancellation/recovery");

@@ -7,6 +7,7 @@ static NSUInteger Queued,Exports,Fetches,MaxFetch,LiveAssets,PeakAssets;
 static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline,LargeOriginal;
 static NSString *LastDirectory;
 static dispatch_semaphore_t VideoRelease;
+static NSUInteger ActiveVideos,PeakVideos,StartedVideos;
 // Preparation runs several workers; fixture counters must not race.
 static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}}
 @interface PHFetchResult ()
@@ -59,7 +60,11 @@ NSString *GSImportFiles(NSArray *files,NSString *account,NSString *quality,NSDat
 NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){
  assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);Count(&Exports);
  if(authorization&&!authorization())return nil;
- if(VideoRelease&&[identifier hasPrefix:@"video-"])assert(dispatch_semaphore_wait(VideoRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ if(VideoRelease&&[identifier hasPrefix:@"video-"]){
+  @synchronized(NSNull.null){StartedVideos++;ActiveVideos++;PeakVideos=MAX(PeakVideos,ActiveVideos);}
+  assert(dispatch_semaphore_wait(VideoRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+  @synchronized(NSNull.null){ActiveVideos--;}
+ }
  if(SwitchDuringExport)dispatch_sync(dispatch_get_main_queue(),^{Identity=@"identity-B";});
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
  if(authorization&&!authorization())return nil;
@@ -118,15 +123,17 @@ int main(void){@autoreleasepool{
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];BOOL photosDone=NO;
  while(!photosDone&&deadline.timeIntervalSinceNow>0){
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
-  @synchronized(NSNull.null){photosDone=Queued==before+6;}
+  @synchronized(NSNull.null){photosDone=Queued==before+6&&StartedVideos>0;}
  }
  assert(photosDone&&!mixedResult);
+ @synchronized(NSNull.null){assert(StartedVideos==1&&ActiveVideos==1);}
  for(NSUInteger i=0;i<20;i++)dispatch_semaphore_signal(VideoRelease);
  deadline=[NSDate dateWithTimeIntervalSinceNow:5];
  while(!mixedResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(mixedResult&&[mixedResult[@"queued"]unsignedIntegerValue]==mixed.count&&[mixedResult[@"scannedItems"]unsignedIntegerValue]==mixed.count);
+ assert(StartedVideos==20&&PeakVideos==1&&ActiveVideos==0);
  VideoRelease=nil;
- NSLog(@"PASS later photos prepare while all video workers are blocked");
+ NSLog(@"PASS later photos prepare with one blocked video and video preparation stays serial after photos finish");
  NSLog(@"PASS oversized original is deferred while later photos continue and remains retryable");
  NSLog(@"PASS 2000 identifier-only selections, missing IDs, individual export failure, account switch, cancellation, queue/IPC failure, retry and private batch diagnostics");
 }}
