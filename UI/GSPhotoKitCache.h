@@ -6,5 +6,6 @@
 + (instancetype)create:(NSError **)error;
 - (BOOL)perform:(dispatch_block_t)operation;
 - (NSDictionary *)statistics;
+- (NSString *)sourceVersionForSize:(unsigned long long)size;
 - (BOOL)remove:(NSError **)error;
 @end

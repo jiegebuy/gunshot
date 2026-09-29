@@ -155,6 +155,11 @@ static void SaveJSON(NSString *name, id value) {
 - (BOOL)consume:(NSData *)data {
     @synchronized(self) {
         if ([self shouldStop] || _finalized) return NO;
+        if (self.ownedCache) {
+            self.values[@"cacheAtData"] = self.ownedCache.statistics;
+            NSString *version = [self.ownedCache sourceVersionForSize:[self.values[@"sourceBefore"][@"expectedBytes"] unsignedLongLongValue]];
+            if (version) self.values[@"scopedSourceVersion"] = version;
+        }
         if (!_count && data.length) {
             _values[@"firstDataSeconds"] = @(-[_start timeIntervalSinceNow]);
             _values[@"progressAtFirstData"] = @(_progress);
@@ -496,7 +501,7 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
                 sample[@"ownedCacheError"] = Failure(cacheError);
             }
             run.ownedCache = nil;
-            if (![sample[@"ownedCacheFiles"] unsignedLongLongValue]) {
+            if (![sample[@"ownedCacheDirectoriesCreated"] unsignedLongLongValue]) {
                 @synchronized(run) { run.stopped = YES; run.stopReason = @"cache_scope_not_inherited"; }
             }
         }
