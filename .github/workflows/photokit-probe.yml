@@ -1,0 +1,21 @@
+name: PhotoKit diagnostic probe
+on:
+  push:
+    paths:
+      - 'experiments/photokit/**'
+      - '.github/workflows/photokit-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build standalone diagnostic app
+        run: bash experiments/photokit/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photokit-probe
+          path: .build/photokit-probe/PhotoKitProbe_UNSIGNED.ipa
+          if-no-files-found: error
