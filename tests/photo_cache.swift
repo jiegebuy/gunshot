@@ -18,7 +18,16 @@ struct PhotoCacheTest {
         }
     }
     static func main() async throws {
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("GoToHP-PhotoSource")
+        let stale = root.appendingPathComponent(UUID().uuidString)
+        let unmarked = root.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unmarked, withIntermediateDirectories: true)
+        try Data("gunshot-photo-range-cache-v1\n".utf8).write(to: stale.appendingPathComponent(".owner"))
+        try Data([1, 2, 3]).write(to: stale.appendingPathComponent("old-range"))
         let a = try GSPhotoKitCache.create()
+        precondition(!FileManager.default.fileExists(atPath: stale.path))
+        precondition(FileManager.default.fileExists(atPath: unmarked.path))
         let b = try GSPhotoKitCache.create()
         async let first = createFile(a, value: 11)
         async let second = createFile(b, value: 22)
@@ -35,6 +44,7 @@ struct PhotoCacheTest {
         precondition(!a.perform { fatalError("revoked lease was used") })
         try b.remove()
         try FileManager.default.removeItem(at: unrelated)
+        try FileManager.default.removeItem(at: unmarked)
         print("PhotoKit task-local cache isolation passed")
     }
 }

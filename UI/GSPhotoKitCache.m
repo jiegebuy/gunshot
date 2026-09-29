@@ -7,6 +7,9 @@
 static NSMutableSet<NSString *> *GSActivePhotoCaches;
 static Class GSPhotoTaskContext;
 static NSMutableDictionary<NSString *, NSNumber *> *GSPhotoCacheCreations;
+static NSData *GSPhotoCacheMarker(void) {
+    return [@"gunshot-photo-range-cache-v1\n" dataUsingEncoding:NSUTF8StringEncoding];
+}
 
 @interface NSFileManager (GSPhotoKitCache)
 - (NSURL *)gs_photoURLForDirectory:(NSSearchPathDirectory)directory inDomain:(NSSearchPathDomainMask)domain appropriateForURL:(NSURL *)url create:(BOOL)create error:(NSError **)error;
@@ -52,8 +55,28 @@ static NSMutableDictionary<NSString *, NSNumber *> *GSPhotoCacheCreations;
     }
     GSPhotoKitCache *cache = [self new];
     NSURL *base = [[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"GoToHP-PhotoSource" isDirectory:YES];
+    NSString *expected = [NSHomeDirectory().stringByResolvingSymlinksInPath stringByAppendingPathComponent:@"Library/Caches/GoToHP-PhotoSource"];
+    if (![base.path.stringByResolvingSymlinksInPath isEqual:expected]) {
+        if (error) *error = [NSError errorWithDomain:@"Gunshot.PhotoCacheLocation" code:1 userInfo:nil];
+        return nil;
+    }
+    static dispatch_once_t cleanupOnce;
+    dispatch_once(&cleanupOnce, ^{
+        // A previous process cannot still own these marked, private leases.
+        // Leave unmarked entries and symlinks alone.
+        for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:base.path error:nil]) {
+            if (![[NSUUID alloc] initWithUUIDString:name]) continue;
+            NSURL *old = [base URLByAppendingPathComponent:name isDirectory:YES];
+            struct stat st;
+            if (lstat(old.fileSystemRepresentation, &st) || !S_ISDIR(st.st_mode)) continue;
+            NSURL *marker = [old URLByAppendingPathComponent:@".owner"];
+            if (lstat(marker.fileSystemRepresentation, &st) || !S_ISREG(st.st_mode) || st.st_size != (off_t)GSPhotoCacheMarker().length) continue;
+            if ([[NSData dataWithContentsOfURL:marker] isEqual:GSPhotoCacheMarker()]) [NSFileManager.defaultManager removeItemAtURL:old error:nil];
+        }
+    });
     cache->_directory = [base URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
     if (![NSFileManager.defaultManager createDirectoryAtURL:cache.directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:error]) return nil;
+    if (![GSPhotoCacheMarker() writeToURL:[cache.directory URLByAppendingPathComponent:@".owner"] options:NSDataWritingAtomic error:error]) return nil;
     struct stat st;
     if (lstat(cache.directory.fileSystemRepresentation, &st) || !S_ISDIR(st.st_mode)) return nil;
     cache->_device = st.st_dev; cache->_inode = st.st_ino;
@@ -69,6 +92,7 @@ static NSMutableDictionary<NSString *, NSNumber *> *GSPhotoCacheCreations;
 - (NSDictionary *)statistics {
     unsigned long long bytes = 0, files = 0;
     for (NSString *relative in [NSFileManager.defaultManager enumeratorAtPath:_directory.path]) {
+        if ([relative isEqual:@".owner"]) continue;
         struct stat st;
         if (!lstat([[_directory URLByAppendingPathComponent:relative] fileSystemRepresentation], &st) && S_ISREG(st.st_mode)) {
             files++; bytes += (unsigned long long)st.st_blocks * 512;
