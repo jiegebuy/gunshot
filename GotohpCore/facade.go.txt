@@ -67,6 +67,10 @@ func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		request.Body = counted
 	}
 	started := time.Now()
+	if gunshotRequestKind(request) == "uploadBody" {
+		gunshotActiveUploads.Add(1)
+		defer gunshotActiveUploads.Add(-1)
+	}
 	response, err := t.base.RoundTrip(request)
 	var sent int64
 	if counted != nil {

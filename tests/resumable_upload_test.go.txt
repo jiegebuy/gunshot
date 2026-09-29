@@ -25,6 +25,27 @@ type resumeServer struct {
 	omitChunkOffset         bool
 }
 
+func TestResumableChunkAdaptsToChangingBandwidth(t *testing.T) {
+	chunk := gunshotResumeChunk
+	// Fast samples ramp up without jumping immediately to the maximum.
+	chunk = gunshotNextChunk(chunk, chunk, time.Second)
+	if chunk != 16<<20 {
+		t.Fatal("unbounded growth", chunk)
+	}
+	chunk = gunshotNextChunk(chunk, chunk, time.Second)
+	if chunk != 32<<20 {
+		t.Fatal("fast path not using longer chunks", chunk)
+	}
+	// A congested path must shrink below the old 8 MiB floor.
+	chunk = gunshotNextChunk(chunk, 8<<20, 48*time.Second)
+	if chunk != 2<<20 {
+		t.Fatal("slow path retained oversized chunks", chunk)
+	}
+	if gunshotNextChunk(chunk, 1, time.Minute) != 1<<20 {
+		t.Fatal("missing minimum chunk bound")
+	}
+}
+
 func (s *resumeServer) RoundTrip(r *http.Request) (*http.Response, error) {
 	s.t.Helper()
 	h := http.Header{}

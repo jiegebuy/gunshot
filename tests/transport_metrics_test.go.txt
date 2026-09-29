@@ -26,9 +26,15 @@ func TestGunshotTransportPublishesBeforeResponse(t *testing.T) {
 		if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+4096 {
 			t.Fatal("request wrapper did not publish before response")
 		}
+		if GunshotTransportSnapshot()["activeUploadRequests"].(int64) != 1 {
+			t.Fatal("in-flight upload request missing")
+		}
 		return nil, io.EOF
 	})}
 	_, _ = transport.RoundTrip(request)
+	if GunshotTransportSnapshot()["activeUploadRequests"].(int64) != 0 {
+		t.Fatal("failed request retained active slot")
+	}
 	if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+4096 {
 		t.Fatal("partial request double-counted")
 	}

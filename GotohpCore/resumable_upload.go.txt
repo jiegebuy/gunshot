@@ -25,6 +25,16 @@ const gunshotResumeThreshold int64 = 32 << 20
 const gunshotResumeChunk int64 = 8 << 20
 const gunshotUploadEndpoint = "https://photos.googleapis.com/data/upload/uploadmedia/interactive"
 
+// Aim for twelve seconds of transfer per acknowledgement. Limit growth to
+// avoid a fast sample causing an oversized request when the path slows down.
+func gunshotNextChunk(current, sent int64, elapsed time.Duration) int64 {
+	if elapsed <= 0 || sent <= 0 {
+		return current
+	}
+	target := float64(sent) * float64(12*time.Second) / float64(elapsed)
+	return max(1<<20, min(32<<20, current*2, int64(min(target, float64(32<<20)))))
+}
+
 // Session URLs are bearer capabilities. Keep this sidecar private beside the
 // original; never include it in queue JSON, diagnostic exports or error text.
 type gunshotUploadSession struct {
@@ -392,6 +402,7 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 			}
 			failures++
 			attempt++
+			chunkTarget = max(1<<20, chunkTarget/2)
 			if failures > 3 {
 				return ScottyFinalizeToken{}, err
 			}
@@ -416,10 +427,7 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 		}
 		if accepted >= 0 {
 			if !needQuery && accepted > s.Offset && sentChunk > 0 {
-				seconds := time.Since(started).Seconds()
-				if seconds > 0 {
-					chunkTarget = max(gunshotResumeChunk, min(32<<20, int64(float64(sentChunk)*4/seconds)))
-				}
+				chunkTarget = gunshotNextChunk(chunkTarget, min(sentChunk, accepted-s.Offset), time.Since(started))
 			}
 			if !needQuery && accepted <= s.Offset {
 				failures++

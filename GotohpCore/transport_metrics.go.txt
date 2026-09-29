@@ -42,6 +42,7 @@ var gunshotMetrics struct {
 	recent            [60]struct{ second, bytes int64 }
 }
 var gunshotUploadBytes atomic.Int64
+var gunshotActiveUploads atomic.Int64
 
 // Count body bytes as the transport reads them, including requests still in flight.
 // These are bytes handed to HTTP, not acknowledgement of durable server storage.
@@ -136,15 +137,19 @@ func GunshotTransportSnapshot() map[string]any {
 		requests[kind] = map[string]any{"requests": value.Requests, "errors": value.Errors, "totalMs": value.Milliseconds, "meanMs": value.Milliseconds / max(1, value.Requests), "requestBodyBytes": value.BodyBytes, "http2Requests": value.HTTP2, "outcomes": outcomes}
 	}
 	now := time.Now().Unix()
-	var sent int64
+	var sent, shortSent int64
 	for _, slot := range gunshotMetrics.recent {
-		if now-slot.second < 60 {
+		age := now - slot.second
+		if age >= 0 && age < 60 {
 			sent += slot.bytes
+		}
+		if age >= 0 && age < 5 {
+			shortSent += slot.bytes
 		}
 	}
 	seconds := 60.0
 	if !gunshotMetrics.started.IsZero() {
 		seconds = min(seconds, max(1, time.Since(gunshotMetrics.started).Seconds()))
 	}
-	return map[string]any{"requests": requests, "nativeAuthCalls": gunshotMetrics.authCalls, "nativeAuthMeanMs": gunshotMetrics.authMS / max(1, gunshotMetrics.authCalls), "recentUploadBodyBytesPerSecond": int64(float64(sent) / seconds), "uploadBodyBytesRead": gunshotUploadBytes.Load(), "windowSeconds": int64(seconds)}
+	return map[string]any{"requests": requests, "nativeAuthCalls": gunshotMetrics.authCalls, "nativeAuthMeanMs": gunshotMetrics.authMS / max(1, gunshotMetrics.authCalls), "recentUploadBodyBytesPerSecond": int64(float64(sent) / seconds), "shortUploadBodyBytesPerSecond": int64(float64(shortSent) / min(5, seconds)), "shortWindowSeconds": min(5, seconds), "activeUploadRequests": gunshotActiveUploads.Load(), "uploadBodyBytesRead": gunshotUploadBytes.Load(), "windowSeconds": int64(seconds)}
 }

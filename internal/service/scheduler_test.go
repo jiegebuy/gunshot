@@ -8,6 +8,7 @@ import (
 
 func TestSchedulerKeepsLargeLaneAndPrioritizesSmallPhotos(t *testing.T) {
 	e := newEngine(t, nil)
+	e.state.Options.Concurrent = 2
 	oldest := &Job{ID: "old", State: "pending", Total: 100 << 20, Created: 1}
 	newer := &Job{ID: "new", State: "pending", Total: 80 << 20, Created: 2}
 	small := &Job{ID: "small", State: "pending", Total: 1 << 20, Created: 3}
@@ -28,6 +29,39 @@ func TestSchedulerKeepsLargeLaneAndPrioritizesSmallPhotos(t *testing.T) {
 	}
 	if e.nextPendingUpload(100) != newer {
 		t.Fatal("large file starved beyond fairness bound")
+	}
+}
+
+func TestSchedulerReservesSustainedTransfersWithoutStarvingPhotos(t *testing.T) {
+	e := newEngine(t, nil)
+	e.state.Options.Concurrent = 8
+	for i := 0; i < 6; i++ {
+		e.state.Jobs = append(e.state.Jobs, &Job{ID: string(rune('a' + i)), State: "pending", Total: 64 << 20, Created: int64(i + 1)})
+	}
+	small := &Job{ID: "photo", State: "pending", Total: 1 << 20, Created: 10}
+	e.state.Jobs = append(e.state.Jobs, small)
+	for i := 0; i < 4; i++ {
+		j := e.nextPendingUpload(100)
+		if j == nil || j == small {
+			t.Fatal("large transfer lane not filled")
+		}
+		j.State = "uploading"
+		e.active[j.ID] = func() {}
+	}
+	if e.nextPendingUpload(100) != small {
+		t.Fatal("photos lost their slots")
+	}
+	e.state.Jobs[0].State = "committing"
+	if j := e.nextPendingUpload(100); j == nil || j == small {
+		t.Fatal("commit incorrectly counted as sustained transfer")
+	}
+	for _, j := range e.state.Jobs {
+		if j.Total >= 32<<20 && j.State == "pending" {
+			j.Next = 200
+		}
+	}
+	if e.nextPendingUpload(100) != small {
+		t.Fatal("delayed large transfers blocked runnable photo")
 	}
 }
 func TestSchedulerFillsConfiguredSlotsAndHonorsPause(t *testing.T) {
