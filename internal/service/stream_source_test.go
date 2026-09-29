@@ -172,3 +172,13 @@ func TestRangeSourceCheckpointFailureStopsPreupload(t *testing.T) {
 		t.Fatal("undurable bytes can reach network worker")
 	}
 }
+
+func TestRangeSourceRejectsCheckpointFilename(t *testing.T) {
+	e := newEngine(t, nil)
+	defer e.Close()
+	r := rangeRequest(1 << 20)
+	r.Resources[0].Name = ".source.json"
+	if _, err := e.begin(r, "googlephotos"); err == nil {
+		t.Fatal("resource collides with checkpoint")
+	}
+}

@@ -290,6 +290,9 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	seen := map[string]bool{}
 	var total int64
 	for _, f := range r.Resources {
+		if r.StreamSourceVersion != "" && strings.EqualFold(f.Name, ".source.json") {
+			return nil, errRequest
+		}
 		if !safeName(f.Name) || seen[strings.ToLower(f.Name)] || f.Size < 0 || (f.Size == 0 && !r.Streaming) || f.Size > 100<<30 {
 			return nil, errRequest
 		}
