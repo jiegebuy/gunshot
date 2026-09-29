@@ -179,6 +179,99 @@ static void WaitForRequest(ProbeRun *run, dispatch_semaphore_t done, void (^canc
     }
 }
 
+// Diagnostic-only duck-typed requests. The inspected CloudAssets delegate uses
+// these Objective-C selectors to deliver decrypted raw ranges to AVFoundation.
+// No framework object internals, credentials, or stream-handle ivars are read.
+@interface ProbeRangeData : NSObject
+@property long long requestedOffset;
+@property NSInteger requestedLength;
+@property long long currentOffset;
+@property ProbeRun *run;
+- (BOOL)requestsAllDataToEndOfResource;
+- (void)respondWithData:(NSData *)data;
+@end
+@implementation ProbeRangeData
+- (BOOL)requestsAllDataToEndOfResource { return NO; }
+- (void)respondWithData:(NSData *)data {
+    @synchronized(self) {
+        if (self.currentOffset < self.requestedOffset || data.length > (NSUInteger)(self.requestedOffset + self.requestedLength - self.currentOffset)) {
+            @synchronized(self.run) { self.run.stopped = YES; self.run.stopReason = @"range_overrun"; } return;
+        }
+        [self.run consume:data]; self.currentOffset += data.length;
+    }
+}
+@end
+@interface ProbeRangeRequest : NSObject
+@property NSURLRequest *request;
+@property ProbeRangeData *dataRequest;
+@property NSURLResponse *response;
+@property NSURLRequest *redirect;
+@property dispatch_semaphore_t done;
+@property NSError *error;
+@property BOOL finished;
+@property BOOL cancelled;
+- (id)contentInformationRequest;
+- (BOOL)isFinished;
+- (BOOL)isCancelled;
+- (void)finishLoading;
+- (void)finishLoadingWithError:(NSError *)error;
+@end
+@implementation ProbeRangeRequest
+- (id)contentInformationRequest { return nil; }
+- (BOOL)isFinished { return self.finished; }
+- (BOOL)isCancelled { return self.cancelled; }
+- (void)finishLoading { [self finishLoadingWithError:nil]; }
+- (void)finishLoadingWithError:(NSError *)error {
+    @synchronized(self) { if (self.finished) return; self.error = error; self.finished = YES; dispatch_semaphore_signal(self.done); }
+}
+@end
+
+static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *command) {
+    AVAssetResourceLoader *loader = asset.resourceLoader;
+    id<AVAssetResourceLoaderDelegate> delegate = loader.delegate;
+    NSString *name = delegate ? NSStringFromClass([delegate class]) : @"nil";
+    @synchronized(run) { run.values[@"loaderDelegateClass"] = name; }
+    if ((! [name hasPrefix:@"CloudAssets."] && ![name hasPrefix:@"CloudAsset."]) || ![delegate respondsToSelector:@selector(resourceLoader:shouldWaitForLoadingOfRequestedResource:)]) {
+        @synchronized(run) { run.values[@"rawReadUnavailable"] = @"unsupported_loader_delegate"; } return;
+    }
+    unsigned long long expected;
+    @synchronized(run) { expected = [run.values[@"sourceBefore"][@"expectedBytes"] unsignedLongLongValue]; }
+    unsigned long long start = [command[@"startOffset"] unsignedLongLongValue], offset = start;
+    if (!expected || expected > (8ULL << 30) || start >= expected) return;
+    @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(1 << 20); }
+    dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    NSUInteger ranges = 0;
+    while (offset < expected && ![run shouldStop]) {
+        ProbeRangeRequest *request = [ProbeRangeRequest new]; request.done = dispatch_semaphore_create(0);
+        request.request = [NSURLRequest requestWithURL:asset.URL];
+        ProbeRangeData *data = [ProbeRangeData new]; data.run = run;
+        data.requestedOffset = offset; data.currentOffset = offset;
+        data.requestedLength = (NSInteger)MIN(1ULL << 20, expected - offset); request.dataRequest = data;
+        dispatch_async(queue, ^{
+            @try {
+                BOOL accepted = [delegate resourceLoader:loader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest *)(id)request];
+                if (!accepted) [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.LoaderRejected" code:1 userInfo:nil]];
+            } @catch (__unused NSException *exception) {
+                [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.LoaderException" code:1 userInfo:nil]];
+            }
+        });
+        WaitForRequest(run, request.done, ^{
+            request.cancelled = YES;
+            dispatch_async(queue, ^{
+                if ([delegate respondsToSelector:@selector(resourceLoader:didCancelLoadingRequest:)])
+                    [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)request];
+                [request finishLoadingWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]];
+            });
+        });
+        if (request.error || data.currentOffset != (long long)offset + data.requestedLength) {
+            @synchronized(run) { run.values[@"rangeError"] = Failure(request.error); run.values[@"rangeShortRead"] = @(data.currentOffset != (long long)offset + data.requestedLength); } break;
+        }
+        offset += data.requestedLength; ranges++;
+        @synchronized(run) { run.values[@"completedRanges"] = @(ranges); run.values[@"nextRangeOffset"] = @(offset); }
+    }
+    [run finishHash:start == 0 && offset == expected];
+}
+
 static void ReadResource(ProbeRun *run, PHAssetResource *resource, BOOL transient, BOOL network) {
     PHAssetResourceRequestOptions *options = [PHAssetResourceRequestOptions new]; options.networkAccessAllowed = network;
     if (transient && !SetPrivateBool(options, @"setDownloadIsTransient:", YES)) {
@@ -253,6 +346,7 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
     };
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     __block AVAsset *received = nil;
+    __block AVPlayerItem *receivedItem = nil;
     void (^complete)(AVAsset *, NSDictionary *) = ^(AVAsset *av, NSDictionary *info) {
         @synchronized(run) {
             received = av; run.values[@"avDeliverySeconds"] = @(-[run.start timeIntervalSinceNow]);
@@ -263,14 +357,23 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
         dispatch_semaphore_signal(done);
     };
     PHImageManager *manager = PHImageManager.defaultManager; PHImageRequestID request;
-    if ([command[@"mode"] isEqual:@"player-streaming"]) {
-        request = [manager requestPlayerItemForVideo:asset options:options resultHandler:^(AVPlayerItem *item, NSDictionary *info) { complete(item.asset, info); }];
+    if ([command[@"mode"] isEqual:@"player-streaming"] || [command[@"mode"] isEqual:@"range-loader-streaming"]) {
+        request = [manager requestPlayerItemForVideo:asset options:options resultHandler:^(AVPlayerItem *item, NSDictionary *info) {
+            @synchronized(run) { receivedItem = item; } complete(item.asset, info);
+        }];
     } else {
         request = [manager requestAVAssetForVideo:asset options:options resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) { complete(av, info); }];
     }
     WaitForRequest(run, done, ^{ [manager cancelImageRequest:request]; });
+    __attribute__((objc_precise_lifetime)) AVPlayerItem *keepAlive;
+    @synchronized(run) { keepAlive = receivedItem; }
+    (void)keepAlive;
     AVAsset *result; @synchronized(run) { result = received; }
-    if (result && ![run shouldStop]) ReadAVAsset(run, result);
+    if (result && ![run shouldStop]) {
+        if ([command[@"mode"] isEqual:@"range-loader-streaming"] && [result isKindOfClass:AVURLAsset.class])
+            ReadLoaderRanges(run, (AVURLAsset *)result, command);
+        else ReadAVAsset(run, result);
+    }
 }
 
 @interface ProbeApp : UIResponder <UIApplicationDelegate>
@@ -287,6 +390,7 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
     UIViewController *controller = [UIViewController new];
     self.text = [[UITextView alloc] initWithFrame:self.window.bounds];
     self.text.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.text.textContainerInset = UIEdgeInsetsMake(60, 24, 24, 24);
     self.text.editable = NO; self.text.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
     self.text.text = @"PhotoKit Probe\nWaiting for photo library access.";
     controller.view = self.text; self.window.rootViewController = controller; [self.window makeKeyAndVisible];
@@ -341,7 +445,7 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
             @synchronized(run) { run.values[@"sourceBefore"] = Describe(asset, resource); }
             if ([mode isEqual:@"resource-transient"] || [mode isEqual:@"resource-baseline"] || [mode isEqual:@"resource-local"]) {
                 ReadResource(run, resource, [mode isEqual:@"resource-transient"], ![mode isEqual:@"resource-local"]);
-            } else if ([mode isEqual:@"video-streaming"] || [mode isEqual:@"video-baseline"] || [mode isEqual:@"player-streaming"]) {
+            } else if ([mode isEqual:@"video-streaming"] || [mode isEqual:@"video-baseline"] || [mode isEqual:@"player-streaming"] || [mode isEqual:@"range-loader-streaming"]) {
                 ReadVideo(run, asset, command);
             } else { @synchronized(run) { run.values[@"error"] = @"unknown_mode"; } }
             @synchronized(run) { run.values[@"sourceAfter"] = Describe(asset, Original(asset)); }

@@ -26,6 +26,12 @@ Modes:
 - `video-baseline`: original, high-quality AVAsset request.
 - `video-streaming`: same AVAsset request with `streamingAllowed = YES`.
 - `player-streaming`: original player-item request with streaming enabled.
+- `range-loader-streaming`: experimental duck-typed 1 MiB requests to the
+  returned CloudAssets resource-loader delegate. This probes its decrypted byte
+  ranges without transcode/export. It retains the player item that owns the
+  delegate, accepts only the inspected CloudAsset(s) delegate classes, and
+  verifies each returned range length. `startOffset` tests nonzero reads.
+  This unsupported diagnostic technique is not part of the production uploader.
 
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded
