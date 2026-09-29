@@ -1,9 +1,11 @@
 package service
 
 import (
+	"app/backend"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding"
 	"errors"
 	"hash"
 	"io"
@@ -11,6 +13,25 @@ import (
 	"path/filepath"
 	"time"
 )
+
+type streamPrefix struct {
+	offset int64
+	digest []byte
+}
+
+func (e *Engine) streamWindow(j *Job) (any, error) {
+	verified, producing := e.streamVerified[j.ID]
+	if !j.Streaming || j.State != "importing" || !producing || j.CancelRequested {
+		return nil, errRequest
+	}
+	remaining := int64(MaxEmbeddedChunk)
+	if j.StreamBounded {
+		// Replaying retained data allocates nothing and must not deadlock on a
+		// full window left by a previous producer.
+		remaining = max(j.Total-verified, backend.GunshotStreamWindow-(j.Total-j.StreamReclaimed))
+	}
+	return map[string]any{"availableBytes": max(0, remaining), "paused": e.state.Options.Paused}, nil
+}
 
 // PhotoKit restarts at byte zero. Compare its replay with the retained prefix
 // before reusing the private server session; never mix two versions of an asset.
@@ -25,6 +46,11 @@ func (e *Engine) resumeStream(j *Job) (any, error) {
 	if st.Size() < j.Total || st.Size() > 100<<30 {
 		return nil, errRequest
 	}
+	floor, digest, err := backend.GunshotStreamPrefix(filepath.Join(e.jobDir(j.ID), j.Resources[0].Name))
+	if err != nil {
+		return nil, err
+	}
+	e.streamPrefixes[j.ID] = streamPrefix{floor, digest}
 	j.Total, j.Resources[0].Size = st.Size(), st.Size()
 	j.State, j.Error, j.Next, j.CancelRequested = "importing", "", 0, false
 	e.streamVerified[j.ID] = 0
@@ -32,13 +58,29 @@ func (e *Engine) resumeStream(j *Job) (any, error) {
 	if err := e.save(); err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": j.ID, "resumed": true, "retainedBytes": j.Total}, nil
+	return map[string]any{"id": j.ID, "resumed": true, "retainedBytes": j.Total - j.StreamReclaimed, "streamBounded": j.StreamBounded}, nil
 }
 
 func (e *Engine) appendStream(j *Job, r Request, limit int) error {
 	verified, producing := e.streamVerified[j.ID]
 	if !producing || j.State != "importing" || j.CancelRequested || r.Index != 0 || r.Offset != verified || len(r.Data) == 0 || len(r.Data) > limit || r.Offset+int64(len(r.Data)) > 100<<30 {
 		return errRequest
+	}
+	end := r.Offset + int64(len(r.Data))
+	if j.StreamBounded && end > j.Total && end-j.StreamReclaimed > backend.GunshotStreamWindow {
+		return errors.New("stream window full")
+	}
+	prefix := e.streamPrefixes[j.ID]
+	if r.Offset < prefix.offset && end >= prefix.offset {
+		state, _ := e.importHashes[j.ID][0].(encoding.BinaryMarshaler).MarshalBinary()
+		h := sha256.New()
+		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state); err != nil {
+			return err
+		}
+		h.Write(r.Data[:prefix.offset-r.Offset])
+		if !bytes.Equal(h.Sum(nil), prefix.digest) {
+			return errors.New("stream original changed")
+		}
 	}
 	f, err := os.OpenFile(filepath.Join(e.jobDir(j.ID), j.Resources[0].Name), os.O_RDWR, 0600)
 	if err != nil {
@@ -53,12 +95,13 @@ func (e *Engine) appendStream(j *Job, r Request, limit int) error {
 		return errRequest
 	}
 	replayed := min(int64(len(r.Data)), j.Total-r.Offset)
-	if replayed > 0 {
-		old := make([]byte, replayed)
-		if _, err = f.ReadAt(old, r.Offset); err != nil {
+	compareStart := min(replayed, max(0, prefix.offset-r.Offset))
+	if replayed > compareStart {
+		old := make([]byte, replayed-compareStart)
+		if _, err = f.ReadAt(old, r.Offset+compareStart); err != nil {
 			return err
 		}
-		if !bytes.Equal(old, r.Data[:replayed]) {
+		if !bytes.Equal(old, r.Data[compareStart:replayed]) {
 			return errors.New("stream original changed")
 		}
 	}
@@ -88,6 +131,7 @@ func (e *Engine) suspendStream(j *Job) error {
 	}
 	j.State, j.Error = "failed", "import_interrupted"
 	delete(e.streamVerified, j.ID)
+	delete(e.streamPrefixes, j.ID)
 	delete(e.importHashes, j.ID)
 	f, err := os.OpenFile(filepath.Join(e.jobDir(j.ID), j.Resources[0].Name), os.O_RDWR, 0600)
 	if err != nil {
@@ -152,9 +196,28 @@ func (e *Engine) preupload(ctx context.Context, snapshot Job, cancel context.Can
 		}
 		j.Uploaded = max(j.Uploaded, ack)
 	}
+	if j.StreamBounded && j.Streaming && j.State == "importing" && !j.CancelRequested && ack > j.StreamReclaimed {
+		reclaimed, reclaimErr := backend.GunshotReclaimStream(filepath.Join(e.jobDir(j.ID), j.Resources[0].Name), ack)
+		j.StreamReclaimed = max(j.StreamReclaimed, reclaimed)
+		if reclaimErr != nil {
+			// Leave the checkpoint intact; do not drain more source bytes into a
+			// window whose physical storage cannot be reclaimed.
+			j.State, j.Error = "failed", "stream_storage_failed"
+			delete(e.streamVerified, j.ID)
+			delete(e.streamPrefixes, j.ID)
+			delete(e.importHashes, j.ID)
+		}
+	}
+	if errors.Is(err, backend.ErrGunshotStreamLost) && j.Streaming && j.State == "importing" {
+		j.State, j.Error = "failed", "stream_reimport_required"
+		delete(e.streamVerified, j.ID)
+		delete(e.streamPrefixes, j.ID)
+		delete(e.importHashes, j.ID)
+	}
 	if j.CancelRequested {
 		j.State = "cancelled"
 		delete(e.streamVerified, j.ID)
+		delete(e.streamPrefixes, j.ID)
 		delete(e.importHashes, j.ID)
 	} else if j.Streaming && j.State == "importing" {
 		j.StreamError = ""

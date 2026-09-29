@@ -1,0 +1,23 @@
+//go:build darwin
+
+package backend
+
+import (
+	"os"
+	"syscall"
+	"unsafe"
+)
+
+func gunshotPunchHole(f *os.File, length int64) error {
+	// fpunchhole_t from sys/fcntl.h. APFS supports deallocation without
+	// changing logical offsets, including while the producer appends a tail.
+	arg := struct {
+		Flags, Reserved uint32
+		Offset, Length  int64
+	}{Length: length}
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), 99, uintptr(unsafe.Pointer(&arg)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}

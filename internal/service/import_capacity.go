@@ -42,6 +42,7 @@ func (e *Engine) importCapacity() map[string]any {
 				}
 			}
 		}
+		size = max(0, size-j.StreamReclaimed)
 		if size == 0 {
 			continue
 		}
@@ -55,8 +56,10 @@ func (e *Engine) importCapacity() map[string]any {
 			}
 		}
 		switch j.State {
+		case "importing":
+			if j.StreamBounded { releasable += size }
 		case "pending", "preparing", "uploading", "committing":
-			releasable += j.Total
+			releasable += size
 		}
 	}
 	return map[string]any{"streamingImport": e.preuploader != nil, "retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused, "storageFault": e.fault}

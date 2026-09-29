@@ -1,0 +1,154 @@
+//go:build linux || darwin
+
+package backend
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"syscall"
+	"testing"
+)
+
+func spoolFixture(t *testing.T) (*Api, *resumeServer, string, []byte, int64) {
+	t.Helper()
+	a, server, path := resumeFixture(t)
+	data := bytes.Repeat([]byte("original-unmodified-bytes"), 180001)
+	server.size = int64(len(data))
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := a.gunshotPreupload(context.Background(), path, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := GunshotReclaimStream(path, ack)
+	if err != nil || released <= 0 || released > ack {
+		t.Fatal("no physical reclamation", released, err)
+	}
+	return a, server, path, data, released
+}
+
+func TestSpoolPhysicalAllocationAndOriginalHash(t *testing.T) {
+	a, server, path, data, released := spoolFixture(t)
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocated := st.Sys().(*syscall.Stat_t).Blocks * 512
+	if st.Size() != int64(len(data)) || allocated > int64(len(data))-released+(128<<10) {
+		t.Fatalf("size=%d allocated=%d released=%d", st.Size(), allocated, released)
+	}
+	hole, _ := os.ReadFile(path)
+	if !bytes.Equal(hole[:released], make([]byte, released)) {
+		t.Fatal("prefix was not deallocated")
+	}
+	hash, err := CalculateSHA1(context.Background(), path)
+	want := sha1.Sum(data)
+	if err != nil || !bytes.Equal(hash, want[:]) {
+		t.Fatal("lost original hash", err)
+	}
+	floor, digest, err := GunshotStreamPrefix(path)
+	prefix := sha256.Sum256(data[:released])
+	if err != nil || floor != released || !bytes.Equal(digest, prefix[:]) {
+		t.Fatal("lost replay verification")
+	}
+	// Recreate the client after deallocation; the wire must contain original
+	// tail bytes and original hash, never the zeros now visible in the prefix.
+	next := &Api{client: a.client, authData: a.authData, authResponseCache: a.authResponseCache}
+	next.client.Transport = gunshotRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("X-Goog-Upload-Command") == "upload, finalize" {
+			if r.Header.Get("X-Goog-Hash") != "sha1="+base64.StdEncoding.EncodeToString(want[:]) {
+				t.Fatal("wrong final digest")
+			}
+			b, e := io.ReadAll(r.Body)
+			if e != nil || !bytes.Equal(b, data[server.received:]) {
+				t.Fatal("wrong resumed body")
+			}
+			r.Body = io.NopCloser(bytes.NewReader(b))
+		}
+		return server.RoundTrip(r)
+	})
+	final, err := next.UploadFileWithProgress(context.Background(), path, "", nil)
+	if err != nil || len(final.Raw) == 0 || server.received != int64(len(data)) || server.starts != 1 {
+		t.Fatal("restart/finalize failed", err)
+	}
+	t.Logf("logical=%d allocated=%d released=%d; final hash and bytes verified", st.Size(), allocated, released)
+}
+
+func TestSpoolRejectsMissingOrRewoundRemoteSession(t *testing.T) {
+	for _, mode := range []string{"missing", "rewound", "replaced"} {
+		t.Run(mode, func(t *testing.T) {
+			a, server, path, data, floor := spoolFixture(t)
+			chunks := server.chunks
+			if mode == "missing" {
+				if err := os.Remove(gunshotSessionPath(path)); err != nil {
+					t.Fatal(err)
+				}
+			} else if mode == "rewound" {
+				server.received = floor - 1
+			} else {
+				s, err := a.gunshotLoadSession(path, "", int64(len(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.URL += "-replacement"
+				if err := gunshotSaveSession(path, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := a.gunshotPreupload(context.Background(), path, int64(len(data))); !errors.Is(err, ErrGunshotStreamLost) {
+				t.Fatal("unsafe stream resume", err)
+			}
+			if _, err := a.UploadFileWithProgress(context.Background(), path, "", nil); !errors.Is(err, ErrGunshotStreamLost) {
+				t.Fatal("unsafe sealed resume", err)
+			}
+			if chunks != server.chunks || server.starts != 1 {
+				t.Fatal("sent deallocated bytes or started new session")
+			}
+		})
+	}
+}
+
+func TestSpoolCheckpointBeforeDeallocationAndSecondReclaim(t *testing.T) {
+	a, server, path, data, floor := spoolFixture(t)
+	// Simulate crash after checkpoint rename, before punch: put the prefix
+	// back. Recovery must not incorporate it into the digest a second time.
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.WriteAt(data[:floor], 0); err != nil {
+		t.Fatal(err)
+	}
+	tail := bytes.Repeat([]byte("next-original-chunk"), 400001)
+	if _, err = f.WriteAt(tail, int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	data = append(data, tail...)
+	server.size = int64(len(data))
+	ack, err := a.gunshotPreupload(context.Background(), path, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor2, err := GunshotReclaimStream(path, ack)
+	if err != nil || floor2 <= floor {
+		t.Fatal("second reclaim failed", floor2, err)
+	}
+	hash, err := CalculateSHA1(context.Background(), path)
+	want := sha1.Sum(data)
+	if err != nil || !bytes.Equal(hash, want[:]) {
+		t.Fatal("digest changed after crash/reclaim", err)
+	}
+	st, _ := os.Stat(path)
+	if st.Sys().(*syscall.Stat_t).Blocks*512 > st.Size()-floor2+(128<<10) {
+		t.Fatal("crash left allocated prefix")
+	}
+}

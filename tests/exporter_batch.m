@@ -16,6 +16,7 @@ static BOOL RejectAppend;
 static BOOL SlashHeavy;
 static BOOL StreamingEnabled,StreamAppendBeforeCompletion;
 static NSUInteger Suspended;
+static NSUInteger StreamWindowWaits,StreamWindowRequests;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
@@ -163,8 +164,9 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   NSArray *resources=request[@"resources"];NSMutableArray *received=[NSMutableArray array];
   for(NSDictionary *resource in resources){assert([resource[@"size"]unsignedIntegerValue]==([request[@"streaming"]boolValue]?0:ResourceBytes(resource[@"name"]).length));[received addObject:[NSMutableData data]];}
   @synchronized(CopyJobs){CopyJobs[identifier]=@{@"resources":resources,@"received":received};Received=received;}
-  return @{@"id":identifier};
+  return @{@"id":identifier,@"streamBounded":request[@"streamBounded"]?:@NO};
  }
+ if([op isEqual:@"stream_window"]){StreamWindowRequests++;BOOL waiting=StreamWindowWaits>0;if(waiting)StreamWindowWaits--;return @{@"availableBytes":@(waiting?0:12345),@"paused":@NO};}
  if([op isEqual:@"append"]){
   if(StreamingEnabled&&atomic_load(&ActiveExports)>0)StreamAppendBeforeCompletion=YES;
   NSDictionary *job=CopyJob(request[@"id"]);BeforeAppend(job,[request[@"index"]unsignedIntegerValue],[request[@"offset"]unsignedLongLongValue]);
@@ -508,12 +510,16 @@ int main(void){@autoreleasepool{
  CloudStarted=nil;CloudRelease=nil;
  dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   StreamingEnabled=YES;StreamAppendBeforeCompletion=NO;NSError *error=nil;
+  StreamWindowWaits=3;StreamWindowRequests=0;
   assert(GSImportPhotoIdentifier(@"streaming-original",@"fixture@example.com",@"original",&error));
-  assert(!error&&StreamAppendBeforeCompletion);
+  assert(!error&&StreamAppendBeforeCompletion&&StreamWindowRequests>3&&StreamWindowWaits==0);
   RejectAppend=YES;
   assert(!GSImportPhotoIdentifier(@"streaming-interrupted",@"fixture@example.com",@"original",&error));
   assert(error==LastAppendError&&Suspended==1);
-  RejectAppend=NO;StreamingEnabled=NO;
+  RejectAppend=NO;StreamWindowWaits=100;
+  assert(!GSImportPhotoIdentifierWithProgress(@"streaming-window-cancel",@"fixture@example.com",@"original",^BOOL{return StreamWindowWaits>98;},nil,&error));
+  assert([error.domain isEqual:@"Gunshot.Authorization"]&&Suspended==2);
+  StreamWindowWaits=0;StreamingEnabled=NO;
  }});
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
  TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();TestExportReservations();TestCloudSpaceLoss();

@@ -37,6 +37,8 @@ func (o Options) valid() bool {
 func validQuality(q string) bool { return q == "original" || q == "saver" || q == "quota" }
 
 type Job struct {
+	StreamBounded          bool       `json:"streamBounded,omitempty"`
+	StreamReclaimed        int64      `json:"streamReclaimed,omitempty"`
 	StreamCloudAtFirstData *int       `json:"streamCloudAtFirstData,omitempty"`
 	StreamUploaded         int64      `json:"streamUploaded,omitempty"`
 	StreamBeforeSeal       int64      `json:"streamBeforeSeal,omitempty"`
@@ -87,6 +89,7 @@ type FingerprintReceipt struct {
 	Completed      int64  `json:"completed"`
 }
 type Request struct {
+	StreamBounded    bool       `json:"streamBounded,omitempty"`
 	CloudAtFirstData *int       `json:"cloudAtFirstData,omitempty"`
 	Streaming        bool       `json:"streaming,omitempty"`
 	NativeID         string     `json:"nativeID,omitempty"`
@@ -116,6 +119,7 @@ type Engine struct {
 	nativeRelay             *nativeRelay
 	importHashes            map[string][]hash.Hash
 	streamVerified          map[string]int64 // Bytes replayed/verified in this producer invocation.
+	streamPrefixes          map[string]streamPrefix
 	preuploader             func(context.Context, string, string, string, int64) (int64, error)
 	mu                      sync.Mutex
 	root                    string
@@ -219,6 +223,7 @@ func Open(root string, runner Runner) (*Engine, error) {
 	}
 	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, fingerprintReceipts: fingerprintReceipts, fingerprintReceiptsByID: fingerprintReceiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner, wake: make(chan struct{}, 1)}
 	en.streamVerified = make(map[string]int64)
+	en.streamPrefixes = make(map[string]streamPrefix)
 	for _, j := range s.Jobs {
 		en.jobsByID[j.ID] = j
 		switch j.State {
@@ -376,6 +381,9 @@ func validateState(s State) error {
 		}
 		if j.Streaming && (len(j.Resources) != 1 || j.SourceKey == "" || (j.State != "importing" && j.State != "failed" && j.State != "cancelled")) {
 			return errors.New("invalid streaming job")
+		}
+		if j.StreamReclaimed < 0 || j.StreamReclaimed > j.Total || (j.StreamReclaimed > 0 && (!j.StreamBounded || len(j.Resources) != 1)) {
+			return errors.New("invalid stream window")
 		}
 		seen[j.ID] = true
 		names := map[string]bool{}

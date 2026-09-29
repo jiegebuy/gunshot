@@ -47,11 +47,18 @@ func (a *Api) gunshotPreupload(ctx context.Context, path string, available int64
 	}
 	s, err := load()
 	if os.IsNotExist(err) {
+		if _, e := gunshotSpoolFloor(path, nil); e != nil {
+			return 0, e
+		}
 		if _, err = a.gunshotStartResumable(ctx, path, "", -1); err != nil {
 			return 0, err
 		}
 		s, err = load()
 	}
+	if err != nil {
+		return 0, err
+	}
+	floor, err := gunshotSpoolFloor(path, s)
 	if err != nil {
 		return 0, err
 	}
@@ -62,13 +69,16 @@ func (a *Api) gunshotPreupload(ctx context.Context, path string, available int64
 	if len(final) != 0 || accepted < 0 || accepted > available {
 		return s.Offset, errors.New("invalid stream acknowledgement")
 	}
+	if accepted < floor {
+		return s.Offset, ErrGunshotStreamLost
+	}
 	s.Offset = accepted
 	if err = gunshotSaveSession(path, s); err != nil {
 		return accepted, err
 	}
 	// Retain at least one byte for the sealed-file path to explicitly finalize.
 	// Even an exact multiple of the server granularity must never finalize here.
-	n := min(gunshotResumeChunk, available-accepted-1)
+	n := min(max(gunshotResumeChunk, s.Granularity), available-accepted-1)
 	n = (n / s.Granularity) * s.Granularity
 	if n <= 0 {
 		return accepted, nil

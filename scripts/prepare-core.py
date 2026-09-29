@@ -74,6 +74,14 @@ shutil.copy2(r / 'tests/context_transport_test.go.txt', d / 'backend/gunshot_con
 shutil.copy2(r / 'GotohpCore/resumable_upload.go.txt', d / 'backend/gunshot_resumable_upload.go')
 shutil.copy2(r / 'GotohpCore/streaming_probe.go.txt', d / 'backend/gunshot_streaming_probe.go')
 shutil.copy2(r / 'GotohpCore/streaming_upload.go.txt', d / 'backend/gunshot_streaming_upload.go')
+for name in ['stream_spool', 'stream_spool_darwin', 'stream_spool_linux', 'stream_spool_other']:
+    shutil.copy2(r / ('GotohpCore/' + name + '.go.txt'), d / ('backend/gunshot_' + name + '.go'))
+shutil.copy2(r / 'tests/stream_spool_test.go.txt', d / 'backend/gunshot_stream_spool_test.go')
+p = d / 'backend/sha1calc.go'
+s = p.read_text()
+needle = 'func CalculateSHA1('
+assert s.count(needle) == 1
+p.write_text(s.replace(needle, 'func gunshotCalculateSHA1File('))
 shutil.copy2(r / 'tests/streaming_upload_test.go.txt', d / 'backend/gunshot_streaming_upload_test.go')
 shutil.copy2(r / 'tests/streaming_probe_test.go.txt', d / 'backend/gunshot_streaming_probe_test.go')
 shutil.copy2(r / 'tests/resumable_upload_test.go.txt', d / 'backend/gunshot_resumable_upload_test.go')

@@ -1,0 +1,188 @@
+package backend
+
+import (
+	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"hash"
+	"io"
+	"os"
+)
+
+// Larger than the largest accepted server granularity, with a final byte left
+// for explicit finalization. The producer stops when this window is full.
+const GunshotStreamWindow int64 = 65 << 20
+const gunshotSpoolAlignment int64 = 1 << 20
+
+var ErrGunshotStreamLost = errors.New("stream checkpoint unavailable; reimport original")
+
+// Written durably BEFORE punching holes. A crash between these operations
+// merely leaves extra allocated blocks. Hash states cover exactly Released.
+type gunshotSpool struct {
+	Version  int    `json:"version"`
+	Released int64  `json:"released"`
+	Session  string `json:"session"`
+	SHA1     []byte `json:"sha1"`
+	SHA256   []byte `json:"sha256"`
+}
+
+func gunshotSpoolPath(path string) string { return gunshotSessionPath(path) + ".spool" }
+func gunshotSpoolSession(s *gunshotUploadSession) string {
+	h := sha256.Sum256([]byte(s.Account + "\x00" + s.URL))
+	return hex.EncodeToString(h[:])
+}
+func gunshotRestoreHash(h hash.Hash, state []byte, size int64) error {
+	if len(state) < 8 || binary.BigEndian.Uint64(state[len(state)-8:]) != uint64(size) {
+		return ErrGunshotStreamLost
+	}
+	if h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state) != nil {
+		return ErrGunshotStreamLost
+	}
+	return nil
+}
+func gunshotLoadSpool(path string) (*gunshotSpool, error) {
+	b, err := os.ReadFile(gunshotSpoolPath(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var s gunshotSpool
+	st, statErr := os.Stat(path)
+	if len(b) > 4096 || json.Unmarshal(b, &s) != nil || s.Version != 1 || s.Released <= 0 || s.Released%gunshotSpoolAlignment != 0 || statErr != nil || s.Released >= st.Size() || len(s.Session) != 64 || gunshotRestoreHash(sha1.New(), s.SHA1, s.Released) != nil || gunshotRestoreHash(sha256.New(), s.SHA256, s.Released) != nil {
+		return nil, ErrGunshotStreamLost
+	}
+	return &s, nil
+}
+
+func gunshotSpoolFloor(path string, session *gunshotUploadSession) (int64, error) {
+	s, err := gunshotLoadSpool(path)
+	if err != nil || s == nil {
+		return 0, err
+	}
+	if session == nil || s.Session != gunshotSpoolSession(session) || session.Offset < s.Released {
+		return 0, ErrGunshotStreamLost
+	}
+	return s.Released, nil
+}
+
+// The producer replays from zero because PhotoKit has no original-byte seek.
+// It must match this digest before the retained tail or remote session is used.
+func GunshotStreamPrefix(path string) (int64, []byte, error) {
+	s, err := gunshotLoadSpool(path)
+	if err != nil || s == nil {
+		return 0, nil, err
+	}
+	h := sha256.New()
+	if err := gunshotRestoreHash(h, s.SHA256, s.Released); err != nil {
+		return 0, nil, err
+	}
+	return s.Released, h.Sum(nil), nil
+}
+
+func gunshotSaveSpool(path string, s *gunshotSpool) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	// Share the session's fsync/rename/directory-sync ordering.
+	return gunshotAtomicPrivateFile(gunshotSpoolPath(path), b)
+}
+
+// Called by the queue after the network worker exits, while the producer is
+// locked. Never release socket-written bytes without a durable server receipt.
+func GunshotReclaimStream(path string, acknowledged int64) (int64, error) {
+	old, err := gunshotLoadSpool(path)
+	if err != nil {
+		return 0, err
+	}
+	floor := int64(0)
+	if old != nil {
+		floor = old.Released
+	}
+	target := (acknowledged / gunshotSpoolAlignment) * gunshotSpoolAlignment
+	if target <= floor {
+		return floor, nil
+	}
+	b, err := os.ReadFile(gunshotSessionPath(path))
+	var session gunshotUploadSession
+	if err != nil || len(b) > 1<<20 || json.Unmarshal(b, &session) != nil || session.Version != 1 || !session.Streaming || session.Protocol != "scotty" || session.Size != -1 || len(session.Finalize) != 0 || !gunshotSafeUploadURL(session.URL) || session.Offset < target {
+		return floor, ErrGunshotStreamLost
+	}
+	if _, err := gunshotSpoolFloor(path, &session); err != nil {
+		return floor, err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
+	if err != nil {
+		return floor, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || target >= st.Size() || session.Offset > st.Size() {
+		return floor, ErrGunshotStreamLost
+	}
+	h1, h256 := sha1.New(), sha256.New()
+	if old != nil {
+		if err = gunshotRestoreHash(h1, old.SHA1, floor); err != nil {
+			return floor, err
+		}
+		if err = gunshotRestoreHash(h256, old.SHA256, floor); err != nil {
+			return floor, err
+		}
+	}
+	if _, err = io.Copy(io.MultiWriter(h1, h256), io.NewSectionReader(f, floor, target-floor)); err != nil {
+		return floor, err
+	}
+	if err = f.Sync(); err != nil {
+		return floor, err
+	}
+	state1, _ := h1.(encoding.BinaryMarshaler).MarshalBinary()
+	state256, _ := h256.(encoding.BinaryMarshaler).MarshalBinary()
+	s := &gunshotSpool{Version: 1, Released: target, Session: gunshotSpoolSession(&session), SHA1: state1, SHA256: state256}
+	if err = gunshotSaveSpool(path, s); err != nil {
+		return floor, err
+	}
+	// Repeating from zero also reclaims a range left allocated by a prior crash.
+	if err = gunshotPunchHole(f, target); err != nil {
+		return floor, err
+	}
+	if err = f.Sync(); err != nil {
+		return floor, err
+	}
+	return target, nil
+}
+
+func CalculateSHA1(ctx context.Context, path string) ([]byte, error) {
+	s, err := gunshotLoadSpool(path)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return gunshotCalculateSHA1File(ctx, path)
+	}
+	h := sha1.New()
+	if err = gunshotRestoreHash(h, s.SHA1, s.Released); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err = f.Seek(s.Released, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err = io.CopyBuffer(&chunkedContextWriter{ctx: ctx, w: h}, f, make([]byte, copyBufferSize)); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}

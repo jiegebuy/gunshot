@@ -251,7 +251,18 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if old, err := e.findSource(r.Account, r.Quality, r.SourceID); err != nil {
 		return nil, err
 	} else if old != nil {
+		if r.Streaming && old.State == "failed" && old.Error == "stream_reimport_required" && old.Owner == owner && e.active[old.ID] == nil && len(r.Resources) == 1 && len(old.Resources) == 1 && old.Resources[0].Name == r.Resources[0].Name {
+			// The remote staging session is gone and no commit was attempted.
+			// A new source selection can safely read the original from zero.
+			old.State = "cancelled"
+			if err := e.save(); err != nil {
+				return nil, err
+			}
+			_ = os.RemoveAll(e.jobDir(old.ID))
+			return e.begin(r, owner)
+		}
 		if r.Streaming && old.Streaming && old.State == "failed" && old.Error == "import_interrupted" && len(r.Resources) == 1 && len(old.Resources) == 1 && old.Resources[0].Name == r.Resources[0].Name && old.Owner == owner {
+			old.StreamBounded = old.StreamBounded || r.StreamBounded
 			return e.resumeStream(old)
 		}
 		return map[string]any{"id": old.ID, "duplicate": true}, nil
@@ -294,6 +305,7 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	}
 	j := &Job{ID: id, Account: r.Account, Quality: r.Quality, Resources: r.Resources, State: "importing", Created: time.Now().Unix(), Timestamp: r.Timestamp, Total: total, Owner: owner, SourceKey: source}
 	j.Streaming = r.Streaming
+	j.StreamBounded = r.Streaming && r.StreamBounded
 	if r.Streaming {
 		e.streamVerified[id] = 0
 	}
@@ -314,7 +326,7 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if err := e.save(); err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id}, nil
+	return map[string]any{"id": id, "streamBounded": j.StreamBounded}, nil
 }
 func (e *Engine) appendChunk(j *Job, r Request) error {
 	return e.appendChunkLimit(j, r, MaxChunk)
@@ -392,6 +404,7 @@ func (e *Engine) seal(j *Job) (any, error) {
 		j.Next = 0
 		j.Error = ""
 		delete(e.streamVerified, j.ID)
+		delete(e.streamPrefixes, j.ID)
 	}
 	delete(e.importHashes, j.ID)
 	if receipt, ok := e.fingerprintReceipts[fingerprint]; ok {
@@ -584,6 +597,8 @@ func (e *Engine) execute(ctx context.Context, snapshot Job, paths []string) {
 	case errors.Is(err, errRemoteComponentExists):
 		j.State = "failed"
 		j.Error = "remote_live_photo_component_exists"
+	case errors.Is(err, errStreamLost):
+		j.State, j.Error = "failed", "stream_reimport_required"
 	case j.State == "committing":
 		j.State = "failed"
 		j.Error = "commit_outcome_unknown"

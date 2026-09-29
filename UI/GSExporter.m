@@ -220,7 +220,7 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   NSArray *resources=GSOriginalResources(asset,&failure);if(resources.count!=1)return nil;
   PHAssetResource *resource=resources.firstObject;
   if(!GSWaitForStorage(directory,64ULL<<20,0,0,!resuming,asset.mediaType==PHAssetMediaTypeImage,authorization,progress,&failure,nil))return nil;
-  NSDictionary *begin=GSRequest(@{@"op":@"begin",@"streaming":@YES,@"account":account,@"quality":quality?:@"original",@"sourceID":sourceID,@"timestamp":@((long long)(asset.creationDate?:NSDate.date).timeIntervalSince1970),@"resources":@[@{@"name":resource.originalFilename.lastPathComponent,@"size":@0}]},&failure);
+  NSDictionary *begin=GSRequest(@{@"op":@"begin",@"streaming":@YES,@"streamBounded":@YES,@"account":account,@"quality":quality?:@"original",@"sourceID":sourceID,@"timestamp":@((long long)(asset.creationDate?:NSDate.date).timeIntervalSince1970),@"resources":@[@{@"name":resource.originalFilename.lastPathComponent,@"size":@0}]},&failure);
   identifier=begin[@"id"];if(!identifier)return nil;
   if([begin[@"duplicate"]boolValue]){sealed=YES;return identifier;}
   __block unsigned long long offset=0;
@@ -236,11 +236,29 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
    for(NSUInteger start=0;start<data.length;){@autoreleasepool{
 #if GS_JAILED
     NSUInteger length=MIN((NSUInteger)1048576,data.length-start);
-    NSData *chunk=[data subdataWithRange:NSMakeRange(start,length)];
-    if(!GSEmbeddedAppend(identifier,0,offset,chunk,&chunkError))return NO;
 #else
     NSUInteger length=MIN((NSUInteger)16384,data.length-start);
+#endif
+    if([begin[@"streamBounded"]boolValue]){
+     // Keep the callback's current chunk in memory while the acknowledged
+     // prefix is reclaimed. Never read the rest of a video into the queue.
+     while(YES){
+      if(authorization&&!authorization()){chunkError=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return NO;}
+      NSDictionary *window=GSRequest(@{@"op":@"stream_window",@"id":identifier},&chunkError);if(!window)return NO;
+      NSUInteger available=[window[@"availableBytes"]unsignedIntegerValue];
+      if(available&&![window[@"paused"]boolValue]){length=MIN(length,available);break;}
+      if(progress)progress(@{@"stage":@"waiting_upload_resume"});
+#if GS_TEST_STORAGE
+      [NSThread sleepForTimeInterval:0.001];
+#else
+      [NSThread sleepForTimeInterval:0.25];
+#endif
+     }
+    }
     NSData *chunk=[data subdataWithRange:NSMakeRange(start,length)];
+#if GS_JAILED
+    if(!GSEmbeddedAppend(identifier,0,offset,chunk,&chunkError))return NO;
+#else
     if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@0,@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&chunkError))return NO;
 #endif
     start+=length;offset+=length;

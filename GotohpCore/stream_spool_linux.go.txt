@@ -1,0 +1,12 @@
+//go:build linux
+
+package backend
+
+import (
+	"os"
+	"syscall"
+)
+
+func gunshotPunchHole(f *os.File, length int64) error {
+	return syscall.Fallocate(int(f.Fd()), 3, 0, length) // KEEP_SIZE | PUNCH_HOLE
+}

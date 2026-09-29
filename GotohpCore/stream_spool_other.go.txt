@@ -1,0 +1,10 @@
+//go:build !linux && !darwin
+
+package backend
+
+import (
+	"errors"
+	"os"
+)
+
+func gunshotPunchHole(*os.File, int64) error { return errors.New("stream deallocation unsupported") }

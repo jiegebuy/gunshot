@@ -9,6 +9,7 @@ import (
 )
 
 var errRemoteComponentExists = backend.ErrGunshotRemoteComponentExists
+var errStreamLost = backend.ErrGunshotStreamLost
 
 func resumablePaths(paths []string) bool {
 	if len(paths) == 0 {

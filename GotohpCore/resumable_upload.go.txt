@@ -84,6 +84,9 @@ func gunshotSaveSession(path string, s *gunshotUploadSession) error {
 		return err
 	}
 	target := gunshotSessionPath(path)
+	return gunshotAtomicPrivateFile(target, data)
+}
+func gunshotAtomicPrivateFile(target string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(target), ".upload-write-")
 	if err != nil {
 		return err
@@ -115,7 +118,8 @@ func gunshotSaveSession(path string, s *gunshotUploadSession) error {
 func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadSession, error) {
 	raw, err := os.ReadFile(gunshotSessionPath(path))
 	if os.IsNotExist(err) {
-		return nil, nil
+		_, spoolErr := gunshotSpoolFloor(path, nil)
+		return nil, spoolErr
 	}
 	if err != nil {
 		return nil, err
@@ -125,6 +129,9 @@ func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadS
 		return nil, errors.New("invalid private upload checkpoint")
 	}
 	if json.Unmarshal(raw, &s) == nil && s.Streaming && s.Version == 1 && s.Size == -1 && s.Protocol == "scotty" && s.Account == a.gunshotAccountKey() && s.Offset >= 0 && s.Offset <= size && gunshotSafeUploadURL(s.URL) && s.Granularity > 0 && s.Granularity <= 64<<20 && len(s.Finalize) == 0 {
+		if _, err := gunshotSpoolFloor(path, &s); err != nil {
+			return nil, err
+		}
 		// The producer has sealed the full file. Adopt its earlier unknown-size
 		// session; the final request supplies the now-verified complete hash.
 		if hash == "" {
@@ -143,6 +150,9 @@ func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadS
 		if _, err = ParseScottyFinalizeToken(s.Finalize); err != nil {
 			return nil, errors.New("invalid saved finalize response")
 		}
+	}
+	if _, err := gunshotSpoolFloor(path, &s); err != nil {
+		return nil, err
 	}
 	return &s, nil
 }
@@ -304,6 +314,9 @@ func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotU
 		_ = os.WriteFile(filepath.Join(filepath.Dir(path), ".upload-transfer-diagnostic.json"), metadata, 0600)
 	}
 	if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		if spool, e := gunshotLoadSpool(path); e != nil || spool != nil {
+			return 0, nil, ErrGunshotStreamLost
+		}
 		return 0, nil, errors.New("upload session expired; manual restart required")
 	}
 	if resp.StatusCode != 308 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
@@ -368,6 +381,13 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 	st, err := os.Stat(path)
 	if err != nil {
 		return ScottyFinalizeToken{}, err
+	}
+	spool, err := gunshotLoadSpool(path)
+	if err != nil {
+		return ScottyFinalizeToken{}, err
+	}
+	if spool != nil && !GunshotHasUploadCheckpoint(path) {
+		return ScottyFinalizeToken{}, ErrGunshotStreamLost
 	}
 	if st.Size() < gunshotResumeThreshold && !GunshotHasUploadCheckpoint(path) {
 		return a.gunshotUploadFileLegacy(ctx, path, uploadToken, onProgress)
@@ -468,6 +488,9 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 			return ParseScottyFinalizeToken(final)
 		}
 		if accepted >= 0 {
+			if floor, e := gunshotSpoolFloor(path, s); e != nil || accepted < floor {
+				return ScottyFinalizeToken{}, ErrGunshotStreamLost
+			}
 			if !needQuery && accepted > s.Offset && sentChunk > 0 {
 				chunkTarget = gunshotNextChunk(chunkTarget, min(sentChunk, accepted-s.Offset), time.Since(started))
 			}

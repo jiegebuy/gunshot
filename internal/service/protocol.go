@@ -42,7 +42,7 @@ func roleAllowed(role, op string) bool {
 		return op == "conditions"
 	}
 	common := op == "import_capacity" || op == "upload_summary" || op == "job" || op == "ping" || op == "list" || op == "accounts" || op == "options" || op == "retry" || op == "cancel" || op == "clear_completed" || op == "retry_failed"
-	if (role == "photos" || role == "googlephotos") && op == "source_lookup" {
+	if (role == "photos" || role == "googlephotos") && (op == "source_lookup" || op == "stream_window") {
 		return true
 	}
 	if role == "settings" || role == "googlephotos" {
@@ -155,7 +155,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 			return nil, err
 		}
 		if j != nil {
-			return map[string]any{"found": true, "id": j.ID, "state": j.State, "retryable": retryableFailure(j), "resumeImport": j.Streaming && j.State == "failed" && j.Error == "import_interrupted"}, nil
+			return map[string]any{"found": true, "id": j.ID, "state": j.State, "retryable": retryableFailure(j), "resumeImport": j.State == "failed" && ((j.Streaming && j.Error == "import_interrupted") || j.Error == "stream_reimport_required")}, nil
 		}
 		receipt, err := e.findSourceReceipt(r.Account, r.Quality, r.SourceID)
 		if err != nil {
@@ -215,10 +215,12 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		}
 		return nil, errRequest
 	}
-	if (r.Op == "append" || r.Op == "seal" || r.Op == "stream_suspend") && j.Owner != role {
+	if (r.Op == "append" || r.Op == "seal" || r.Op == "stream_suspend" || r.Op == "stream_window") && j.Owner != role {
 		return nil, errRequest
 	}
 	switch r.Op {
+	case "stream_window":
+		return e.streamWindow(j)
 	case "job":
 		return j, nil
 	case "append":
@@ -244,6 +246,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 			j.State = "cancelled"
 			delete(e.importHashes, j.ID)
 			delete(e.streamVerified, j.ID)
+			delete(e.streamPrefixes, j.ID)
 		}
 		err := e.save()
 		if err == nil && j.State == "cancelled" {
