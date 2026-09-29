@@ -26,6 +26,9 @@ func (e *Engine) nextPendingUpload(now int64) *Job {
 	if oldest == nil {
 		return nil
 	}
+	if e.state.Options.Concurrent == 1 {
+		return oldest
+	}
 	if large != nil && largeActive < max(1, e.state.Options.Concurrent/2) {
 		return large
 	}

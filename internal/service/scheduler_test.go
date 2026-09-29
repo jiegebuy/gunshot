@@ -64,6 +64,16 @@ func TestSchedulerReservesSustainedTransfersWithoutStarvingPhotos(t *testing.T) 
 		t.Fatal("delayed large transfers blocked runnable photo")
 	}
 }
+
+func TestSchedulerSingleSlotRetainsOldestFirst(t *testing.T) {
+	e := newEngine(t, nil)
+	e.state.Options.Concurrent = 1
+	small := &Job{ID: "old-photo", State: "pending", Total: 1 << 20, Created: 1}
+	e.state.Jobs = []*Job{small, {ID: "video", State: "pending", Total: 64 << 20, Created: 2}}
+	if e.nextPendingUpload(100) != small {
+		t.Fatal("single-slot queue starved an older photo")
+	}
+}
 func TestSchedulerFillsConfiguredSlotsAndHonorsPause(t *testing.T) {
 	started := make(chan struct{}, 8)
 	e := newEngine(t, func(ctx context.Context, _ []string, _, _ string, _ func(Progress)) (string, error) {
