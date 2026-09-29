@@ -168,8 +168,10 @@ int main(void){@autoreleasepool{
  SourceJobs=[NSMutableDictionary dictionary];
  NSDictionary *result=Run();assert(Queued==60&&Written==61&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
  assert([result[@"exportedBytes"]unsignedLongLongValue]==61ULL*FixtureSize&&[result[@"cloudProgressUnits"]unsignedIntegerValue]==61000);
+ assert([result[@"stagedBytes"]unsignedLongLongValue]==61ULL*FixtureSize);
  NSUInteger writtenAfterFirst=Written;result=Run();
  assert(Queued==60&&Written==writtenAfterFirst&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
+ assert([result[@"stagedBytes"]unsignedLongLongValue]==0); // Existing receipts copy no bytes.
  [SourceJobs removeAllObjects];
  IncludeUnreadable=YES;result=Run();assert(Queued==119&&[result[@"queued"]intValue]==59&&[result[@"failed"]intValue]==1&&[result[@"remaining"]intValue]==0);
  assert([result[@"failureCodes"][@"export_failed"]intValue]==1);
@@ -215,13 +217,27 @@ int main(void){@autoreleasepool{
  dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   RejectAppend=YES;
   NSError *error=nil;
-  assert(!GSImportPhotoIdentifier(@"chunk-failure",@"fixture@example.com",@"original",&error));
+  __block unsigned long long staged=0;NSUInteger queuedBefore=Queued;
+  GSImportStorageProgress copyProgress=^(NSDictionary *event){
+   staged+=[event[@"stagedBytesDelta"]unsignedLongLongValue];
+   if(event[@"stagedBytesDelta"]){
+    assert(staged==[Received[0]length]&&Queued==queuedBefore); // Publish accepted bytes before seal.
+   }
+  };
+  assert(!GSImportPhotoIdentifierWithProgress(@"chunk-failure",@"fixture@example.com",@"original",nil,copyProgress,&error));
+#if GS_JAILED
+  assert(staged==1048576);
+#else
+  assert(staged==32768);
+#endif
   assert(error&&LastAppendError==error);
   assert([error.domain isEqual:@"Gunshot.IPC"]&&error.code==73&&Cancelled==1);
   assert(!GSImportPhotoIdentifier(@"chunk-failure-no-error",@"fixture@example.com",@"original",nil));
   assert(Cancelled==2);
   RejectAppend=NO;
-  assert(GSImportPhotoIdentifier(@"after-chunk-failure",@"fixture@example.com",@"original",&error));
+  staged=0;
+  assert(GSImportPhotoIdentifierWithProgress(@"after-chunk-failure",@"fixture@example.com",@"original",nil,copyProgress,&error));
+  assert(staged==FixtureSize);
   assert(!error);
   NSUInteger before=Written;
   for(NSUInteger i=0;i<25000;i++){@autoreleasepool{

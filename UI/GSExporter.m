@@ -137,6 +137,8 @@ static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *accou
    if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@(i),@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&failure))return nil;
 #endif
    offset+=chunk.length;
+   // Queue copying/hashing can outlast the system's progress deadline for a large original.
+   if(progress)progress(@{@"stagedBytesDelta":@(chunk.length)});
   }}} @finally {[f closeAndReturnError:nil];}
  }
  NSDictionary *sealed=GSRequest(@{@"op":@"seal",@"id":identifier},&failure);success=sealed!=nil;return sealed[@"id"];

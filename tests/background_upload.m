@@ -251,6 +251,13 @@ static void TestPreparationProgress(void){
  GSTimer.fireDate=NSDate.date;
  [NSRunLoop.mainRunLoop runMode:@"FixtureTrackingMode" beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
  assert(task.progress.completedUnitCount==2&&GSPolling);
+ // A multi-GB original is still copying after PhotoKit finishes and before seal.
+ // Upload summary remains blocked, no item completes, but each successful copy advances progress.
+ for(NSUInteger tick=1;tick<=40;tick++){
+  @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"exportedBytes":@(9ULL<<30),@"cloudProgressUnits":@100,@"stagedBytes":@(tick*(128ULL<<20))};}
+  GSPollBackground();assert(task.progress.completedUnitCount==2+(int64_t)tick&&GSPolling&&task.completions==0);
+  GSPollBackground();assert(task.progress.completedUnitCount==2+(int64_t)tick); // Waiting is not progress.
+ }
  dispatch_semaphore_t oldRelease=SummaryRelease;
  @synchronized(RealLock){SummaryStarted=dispatch_semaphore_create(0);SummaryRelease=dispatch_semaphore_create(0);Batch=@{@"active":@YES,@"processed":@0};}
  GSBeginBackgroundUpload(20);FixtureTask *replacement=[FixtureTask new];Launch(replacement);Await(SummaryStarted);
@@ -259,7 +266,7 @@ static void TestPreparationProgress(void){
  dispatch_semaphore_t release=SummaryRelease;
  @synchronized(RealLock){SummaryRelease=nil;SummaryStarted=nil;}
  dispatch_semaphore_signal(release);Drain();assert(!GSPolling&&replacement.completions==0);
- @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"cloudProgressUnits":@200};}
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"stagedBytes":@1048576};}
  GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1&&replacement.completions==0);
  GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1);
  GSFinishBackground(NO,@"test_progress_end");
