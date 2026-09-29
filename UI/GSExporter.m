@@ -2,6 +2,7 @@
 #import "GSExporter.h"
 #import "../Shared/IPCProtocol.h"
 #import "GSImportStorage.h"
+#import "GSPhotoKitRangeSource.h"
 #include <math.h>
 
 static unsigned long long GSStagingReservedBytes,GSExportReservedBytes;
@@ -216,21 +217,28 @@ NSString *GSImportPhotoIdentifierChecked(NSString *localIdentifier,NSString *acc
 }
 static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *account,NSString *quality,NSString *sourceID,BOOL resuming,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
  NSError *failure=nil;unsigned long long reserved=0;NSString *identifier=nil;BOOL sealed=NO;
+ GSPhotoKitRangeSource *range=nil;
  @try {
   NSArray *resources=GSOriginalResources(asset,&failure);if(resources.count!=1)return nil;
   PHAssetResource *resource=resources.firstObject;
   if(!GSWaitForStorage(directory,64ULL<<20,0,0,!resuming,asset.mediaType==PHAssetMediaTypeImage,authorization,progress,&failure,nil))return nil;
-  NSDictionary *begin=GSRequest(@{@"op":@"begin",@"streaming":@YES,@"streamBounded":@YES,@"account":account,@"quality":quality?:@"original",@"sourceID":sourceID,@"timestamp":@((long long)(asset.creationDate?:NSDate.date).timeIntervalSince1970),@"resources":@[@{@"name":resource.originalFilename.lastPathComponent,@"size":@0}]},&failure);
+#if !GS_TEST_STORAGE
+  range=[GSPhotoKitRangeSource openAsset:asset resource:resource authorization:authorization error:&failure];
+  if(failure)return nil;
+#endif
+  NSMutableDictionary *request=[@{@"op":@"begin",@"streaming":@YES,@"streamBounded":@YES,@"account":account,@"quality":quality?:@"original",@"sourceID":sourceID,@"timestamp":@((long long)(asset.creationDate?:NSDate.date).timeIntervalSince1970),@"resources":@[@{@"name":resource.originalFilename.lastPathComponent,@"size":@0}]}mutableCopy];
+  if(range){request[@"streamSourceVersion"]=range.sourceVersion;request[@"streamSourceSize"]=@(range.size);}
+  NSDictionary *begin=GSRequest(request,&failure);
   identifier=begin[@"id"];if(!identifier)return nil;
   if([begin[@"duplicate"]boolValue]){sealed=YES;return identifier;}
-  __block unsigned long long offset=0;
+  __block unsigned long long offset=[begin[@"resumeOffset"]unsignedLongLongValue];
   __block NSNumber *cloudAtFirstData=nil;
   GSImportStorageProgress streamProgress=^(NSDictionary *event){
    if(event[@"streamFirstDataCloudUnits"])cloudAtFirstData=event[@"streamFirstDataCloudUnits"];
    if(progress)progress(event);
   };
   if(progress)progress(@{@"streamJob":identifier,@"stage":@"streaming"});
-  NSArray *read=GSWriteOriginalResources(asset,directory,&reserved,authorization,streamProgress,&failure,^BOOL(NSData *data,NSError **appendError){
+  BOOL (^append)(NSData *,NSError **)=^BOOL(NSData *data,NSError **appendError){
    NSError *chunkError=nil;
    @try {
    for(NSUInteger start=0;start<data.length;){@autoreleasepool{
@@ -265,7 +273,15 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
     if(progress)progress(@{@"stagedBytesDelta":@(length)});
    }}return YES;
    } @finally {if(appendError)*appendError=chunkError;}
-  });
+  };
+  BOOL read=NO;
+  if(range){
+   read=[range readFromOffset:offset consume:^BOOL(NSData *data,NSError **appendError){
+    BOOL accepted=append(data,appendError);
+    if(accepted&&progress)progress(@{@"exportedBytesDelta":@(data.length)});
+    return accepted;
+   } error:&failure];
+  }else read=GSWriteOriginalResources(asset,directory,&reserved,authorization,streamProgress,&failure,append)!=nil;
   if(!read)return nil;
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return nil;}
   NSMutableDictionary *seal=[@{@"op":@"seal",@"id":identifier}mutableCopy];
@@ -273,6 +289,7 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   NSDictionary *result=GSRequest(seal,&failure);sealed=result!=nil;
   return result[@"id"];
  } @finally {
+  [range close];
   if(identifier&&!sealed){
    // Free a space-blocking partial; other interruptions retain the verified
    // prefix and server checkpoint for replay when this source is selected again.

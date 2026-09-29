@@ -5,6 +5,7 @@ on:
       - 'experiments/photokit/**'
       - 'UI/GSPhotoKitCache.*'
       - 'UI/GSPhotoKitTaskContext.swift'
+      - 'UI/GSPhotoKitRangeSource.*'
       - '.github/workflows/photokit-probe.yml'
   workflow_dispatch:
 permissions:

@@ -86,6 +86,53 @@ func GunshotStreamPrefix(path string) (int64, []byte, error) {
 	return s.Released, h.Sum(nil), nil
 }
 
+// Restore the released hash prefix and rehash the retained tail. The caller
+// must compare the resulting state with its durable source checkpoint before
+// admitting a nonzero source resume. A spool is bound to the same local upload
+// session; the uploader will independently query Google's acknowledged offset.
+func GunshotStreamImportHash(path string, received int64) (hash.Hash, int64, error) {
+	s, err := gunshotLoadSpool(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	h, floor := sha256.New(), int64(0)
+	b, readErr := os.ReadFile(gunshotSessionPath(path))
+	var session gunshotUploadSession
+	if readErr == nil {
+		if len(b) > 1<<20 || json.Unmarshal(b, &session) != nil || session.Version != 1 || !session.Streaming || session.Protocol != "scotty" || session.Size != -1 || len(session.Finalize) != 0 || !gunshotSafeUploadURL(session.URL) || session.Offset < 0 || session.Offset > received {
+			return nil, 0, ErrGunshotStreamLost
+		}
+	} else if !os.IsNotExist(readErr) || s != nil {
+		return nil, 0, ErrGunshotStreamLost
+	}
+	if s != nil {
+		floor, err = gunshotSpoolFloor(path, &session)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err = gunshotRestoreHash(h, s.SHA256, floor); err != nil {
+			return nil, 0, err
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || received < floor || received < 0 || received > st.Size() {
+		return nil, 0, ErrGunshotStreamLost
+	}
+	n, err := io.Copy(h, io.NewSectionReader(f, floor, received-floor))
+	if err != nil {
+		return nil, 0, err
+	}
+	if n != received-floor {
+		return nil, 0, io.ErrUnexpectedEOF
+	}
+	return h, floor, nil
+}
+
 func gunshotSaveSpool(path string, s *gunshotSpool) error {
 	b, err := json.Marshal(s)
 	if err != nil {

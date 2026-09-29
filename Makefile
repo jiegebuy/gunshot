@@ -6,7 +6,7 @@ include UI/sources.mk
 TWEAK_NAME = Gunshot
 Gunshot_FILES = Tweak.xm Shared/IPCClient.m Shared/GSSandboxAccess.m Shared/GSDiscovery.c $(addprefix UI/,$(GUNSHOT_UI_FILES))
 Gunshot_CFLAGS = -fobjc-arc -fblocks -IShared
-Gunshot_FRAMEWORKS = UIKit Foundation CoreGraphics Photos PhotosUI
+Gunshot_FRAMEWORKS = UIKit Foundation CoreGraphics Photos PhotosUI AVFoundation
 include $(THEOS_MAKE_PATH)/tweak.mk
 SUBPROJECTS += Daemon
 include $(THEOS_MAKE_PATH)/aggregate.mk

@@ -11,6 +11,9 @@ GUNSHOT_UI_FILES = \
 	GSNativeRelay.m \
 	GSAccountConnection.m \
 	GSExporter.m \
+	GSPhotoKitRangeSource.m \
+	GSPhotoKitCache.m \
+	GSPhotoKitTaskContext.swift \
 	GSNativeRouting.m \
 	GSBackupRequests.m \
 	GSPhotosIntegration.m \

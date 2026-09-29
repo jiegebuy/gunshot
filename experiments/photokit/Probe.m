@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "../../UI/GSPhotoKitCache.h"
+#import "../../UI/GSPhotoKitRangeSource.h"
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -595,7 +596,14 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
         if (!resource) { @synchronized(run) { run.values[@"error"] = @"original_not_found"; } }
         else {
             @synchronized(run) { run.values[@"sourceBefore"] = Describe(asset, resource); }
-            if ([mode isEqual:@"resource-transient"] || [mode isEqual:@"resource-baseline"] || [mode isEqual:@"resource-local"]) {
+            if ([mode isEqual:@"production-range"]) {
+                NSError *error = nil;
+                GSPhotoKitRangeSource *source = [GSPhotoKitRangeSource openAsset:asset resource:resource authorization:^BOOL{ return ![run shouldStop]; } error:&error];
+                BOOL complete = source && [source readFromOffset:[command[@"startOffset"] unsignedLongLongValue] consume:^BOOL(NSData *data, NSError **readError) { return [run consume:data]; } error:&error];
+                @synchronized(run) { run.values[@"rangeSourceError"] = Failure(error); run.values[@"sourceVersion"] = source.sourceVersion ?: @""; }
+                [run finishHash:complete && ![command[@"startOffset"] unsignedLongLongValue]];
+                [source close];
+            } else if ([mode isEqual:@"resource-transient"] || [mode isEqual:@"resource-baseline"] || [mode isEqual:@"resource-local"]) {
                 ReadResource(run, resource, [mode isEqual:@"resource-transient"], ![mode isEqual:@"resource-local"]);
             } else if ([mode isEqual:@"video-streaming"] || [mode isEqual:@"video-baseline"] || [mode isEqual:@"player-streaming"] || [mode isEqual:@"range-loader-streaming"]) {
                 if ([mode isEqual:@"range-loader-streaming"] && [command[@"windowBytes"] unsignedLongLongValue]) ReadVideoWindows(run, asset, command);

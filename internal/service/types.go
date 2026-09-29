@@ -37,6 +37,8 @@ func (o Options) valid() bool {
 func validQuality(q string) bool { return q == "original" || q == "saver" || q == "quota" }
 
 type Job struct {
+	StreamSourceVersion    string     `json:"streamSourceVersion,omitempty"`
+	StreamSourceSize       int64      `json:"streamSourceSize,omitempty"`
 	StreamBounded          bool       `json:"streamBounded,omitempty"`
 	StreamReclaimed        int64      `json:"streamReclaimed,omitempty"`
 	StreamCloudAtFirstData *int       `json:"streamCloudAtFirstData,omitempty"`
@@ -89,26 +91,28 @@ type FingerprintReceipt struct {
 	Completed      int64  `json:"completed"`
 }
 type Request struct {
-	StreamBounded    bool       `json:"streamBounded,omitempty"`
-	CloudAtFirstData *int       `json:"cloudAtFirstData,omitempty"`
-	Streaming        bool       `json:"streaming,omitempty"`
-	NativeID         string     `json:"nativeID,omitempty"`
-	SourceID         string     `json:"sourceID,omitempty"`
-	Op               string     `json:"op"`
-	ID               string     `json:"id,omitempty"`
-	Account          string     `json:"account,omitempty"`
-	Secret           string     `json:"secret,omitempty"`
-	Quality          string     `json:"quality,omitempty"`
-	Resources        []Resource `json:"resources,omitempty"`
-	Index            int        `json:"index,omitempty"`
-	Offset           int64      `json:"offset,omitempty"`
-	Data             []byte     `json:"data,omitempty"`
-	Timestamp        int64      `json:"timestamp,omitempty"`
-	Options          *Options   `json:"options,omitempty"`
-	Cursor           int        `json:"cursor,omitempty"`
-	Online           bool       `json:"online,omitempty"`
-	WiFi             bool       `json:"wifi,omitempty"`
-	Charging         bool       `json:"charging,omitempty"`
+	StreamSourceVersion string     `json:"streamSourceVersion,omitempty"`
+	StreamSourceSize    int64      `json:"streamSourceSize,omitempty"`
+	StreamBounded       bool       `json:"streamBounded,omitempty"`
+	CloudAtFirstData    *int       `json:"cloudAtFirstData,omitempty"`
+	Streaming           bool       `json:"streaming,omitempty"`
+	NativeID            string     `json:"nativeID,omitempty"`
+	SourceID            string     `json:"sourceID,omitempty"`
+	Op                  string     `json:"op"`
+	ID                  string     `json:"id,omitempty"`
+	Account             string     `json:"account,omitempty"`
+	Secret              string     `json:"secret,omitempty"`
+	Quality             string     `json:"quality,omitempty"`
+	Resources           []Resource `json:"resources,omitempty"`
+	Index               int        `json:"index,omitempty"`
+	Offset              int64      `json:"offset,omitempty"`
+	Data                []byte     `json:"data,omitempty"`
+	Timestamp           int64      `json:"timestamp,omitempty"`
+	Options             *Options   `json:"options,omitempty"`
+	Cursor              int        `json:"cursor,omitempty"`
+	Online              bool       `json:"online,omitempty"`
+	WiFi                bool       `json:"wifi,omitempty"`
+	Charging            bool       `json:"charging,omitempty"`
 }
 type Progress struct {
 	State           string
@@ -378,6 +382,9 @@ func validateState(s State) error {
 		}
 		if j.Owner != "photos" && j.Owner != "googlephotos" {
 			return errors.New("invalid job owner")
+		}
+		if (j.StreamSourceVersion == "" && j.StreamSourceSize != 0) || (j.StreamSourceVersion != "" && (!validSHA256(j.StreamSourceVersion) || j.StreamSourceSize <= 0 || j.StreamSourceSize > 8<<30 || j.Total > j.StreamSourceSize || !j.StreamBounded || len(j.Resources) != 1)) {
+			return errors.New("invalid range source")
 		}
 		if j.Streaming && (len(j.Resources) != 1 || j.SourceKey == "" || (j.State != "importing" && j.State != "failed" && j.State != "cancelled")) {
 			return errors.New("invalid streaming job")

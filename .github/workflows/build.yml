@@ -36,6 +36,11 @@ jobs:
           .build/snapshot-guard-test
           clang -O2 -fobjc-arc -framework Foundation tests/sideload_audit_upload.m -o .build/sideload-audit-test
           .build/sideload-audit-test
+      - name: Task-local PhotoKit cache ownership
+        run: |
+          clang -O2 -fobjc-arc -framework Foundation -Wno-deprecated-declarations -c UI/GSPhotoKitCache.m -o .build/photo-cache.o
+          swiftc -parse-as-library -swift-version 5 -import-objc-header UI/GSPhotoKitCache.h UI/GSPhotoKitTaskContext.swift tests/photo_cache.swift .build/photo-cache.o -o .build/photo-cache-test
+          .build/photo-cache-test
   core:
     runs-on: ubuntu-latest
     steps:

@@ -248,6 +248,9 @@ func (e *Engine) recordFingerprintReceipt(j *Job) error {
 	return nil
 }
 func (e *Engine) begin(r Request, owner string) (any, error) {
+	if !validStreamSource(r) {
+		return nil, errRequest
+	}
 	if old, err := e.findSource(r.Account, r.Quality, r.SourceID); err != nil {
 		return nil, err
 	} else if old != nil {
@@ -263,6 +266,9 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 		}
 		if r.Streaming && old.Streaming && old.State == "failed" && old.Error == "import_interrupted" && len(r.Resources) == 1 && len(old.Resources) == 1 && old.Resources[0].Name == r.Resources[0].Name && old.Owner == owner {
 			old.StreamBounded = old.StreamBounded || r.StreamBounded
+			if old.StreamSourceVersion != "" && r.StreamSourceVersion != "" {
+				return e.resumeRangeStream(old, r)
+			}
 			return e.resumeStream(old)
 		}
 		return map[string]any{"id": old.ID, "duplicate": true}, nil
@@ -306,6 +312,7 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	j := &Job{ID: id, Account: r.Account, Quality: r.Quality, Resources: r.Resources, State: "importing", Created: time.Now().Unix(), Timestamp: r.Timestamp, Total: total, Owner: owner, SourceKey: source}
 	j.Streaming = r.Streaming
 	j.StreamBounded = r.Streaming && r.StreamBounded
+	j.StreamSourceVersion, j.StreamSourceSize = r.StreamSourceVersion, r.StreamSourceSize
 	if r.Streaming {
 		e.streamVerified[id] = 0
 	}
@@ -320,6 +327,14 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	e.importHashes[id] = make([]hash.Hash, len(r.Resources))
 	for i := range r.Resources {
 		e.importHashes[id][i] = sha256.New()
+	}
+	if j.StreamSourceVersion != "" {
+		if err := e.checkpointRangeStream(j); err != nil {
+			delete(e.importHashes, id)
+			delete(e.streamVerified, id)
+			_ = os.RemoveAll(e.jobDir(id))
+			return nil, err
+		}
 	}
 	e.state.Jobs = append(e.state.Jobs, j)
 	e.jobsByID[id] = j
@@ -364,6 +379,9 @@ func (e *Engine) seal(j *Job) (any, error) {
 		return nil, errRequest
 	}
 	if j.Streaming && (j.Total <= 0 || e.streamVerified[j.ID] != j.Total) {
+		return nil, errRequest
+	}
+	if j.StreamSourceSize > 0 && j.Total != j.StreamSourceSize {
 		return nil, errRequest
 	}
 	h := sha256.New()

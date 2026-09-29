@@ -67,6 +67,9 @@ func (e *Engine) appendStream(j *Job, r Request, limit int) error {
 		return errRequest
 	}
 	end := r.Offset + int64(len(r.Data))
+	if j.StreamSourceSize > 0 && end > j.StreamSourceSize {
+		return errRequest
+	}
 	if j.StreamBounded && end > j.Total && end-j.StreamReclaimed > backend.GunshotStreamWindow {
 		return errors.New("stream window full")
 	}
@@ -118,6 +121,20 @@ func (e *Engine) appendStream(j *Job, r Request, limit int) error {
 	e.streamVerified[j.ID] += int64(len(r.Data))
 	j.Total = max(j.Total, e.streamVerified[j.ID])
 	j.Resources[0].Size = j.Total
+	// A range source may discard its window as soon as append succeeds. Make
+	// both bytes and their hash checkpoint durable before acknowledging it.
+	if j.StreamSourceVersion != "" && e.streamVerified[j.ID] == j.Total {
+		if err := f.Sync(); err != nil {
+			j.State, j.Error = "failed", "import_interrupted"
+			delete(e.streamVerified, j.ID)
+			return err
+		}
+		if err := e.checkpointRangeStream(j); err != nil {
+			j.State, j.Error = "failed", "import_interrupted"
+			delete(e.streamVerified, j.ID)
+			return err
+		}
+	}
 	e.signalWork()
 	return nil
 }

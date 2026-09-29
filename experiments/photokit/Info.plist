@@ -5,7 +5,7 @@
 <key>CFBundleExecutable</key><string>PhotoKitProbe</string>
 <key>CFBundleName</key><string>PhotoKit Probe</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleVersion</key><string>7</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>MinimumOSVersion</key><string>15.0</string>
 <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
