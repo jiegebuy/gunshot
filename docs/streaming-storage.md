@@ -50,7 +50,8 @@ queries and recovers an interrupted zero-byte import through append and seal.
 
 This bounds the application's queue copy, not PhotoKit's own original cache.
 `requestDataForAssetResource` provides no original byte-range/seek parameter.
-The public iOS 18 header still exposes only network permission and progress.
+The public iOS 27 resource-manager header still exposes only network permission
+and progress on this data-request path.
 The inspected iOS 17 runtime headers separate resource availability from file
 streaming; private options such as `downloadIsTransient` and
 `pruneAfterAvailableOnLowDisk` are cache-policy hints, not an original-byte
@@ -60,8 +61,25 @@ Consequently a file may still be downloaded completely by PhotoKit before its
 first callback. PhotoKit progress at first data and a pre-EOF Google receipt
 prove overlapping reading/upload, not overlapping iCloud network traffic.
 
+This is a limitation of the current PhotoKit source, not proof that iCloud
+originals cannot be streamed. The 2026-09-29 investigation found a direct HTTP
+source in released rclone v1.75.1, including Photos, Range reads, and ADP/PCS
+authorization. It is not integrated into this app yet. See
+[iCloud original streaming research](analysis/icloud-original-streaming.md)
+for evidence, authentication requirements, and the additional recovery work.
+
+An isolated iPadOS 27 experiment subsequently obtained original-byte ranges
+through the private streaming player-item CloudAsset loader. A 261,547,802-byte
+read matched the normal PhotoKit original's SHA-256 exactly. This is not yet
+part of the production source. A later windowed experiment reclaimed its own
+temporary range files while reading a 247,546,555-byte original, with matching
+full hash and 74,244,096 peak extra temporary allocated bytes. Durable source
+resume and Google upload integration remain unverified.
+See [PhotoKit probe results](../experiments/photokit/RESULTS.md).
+
 Research references:
 
+- https://github.com/xybp888/iOS-SDKs/blob/master/iPhoneOS27.0.sdk/System/Library/Frameworks/Photos.framework/Headers/PHAssetResourceManager.h
 - https://github.com/xybp888/iOS-SDKs/blob/master/iPhoneOS18.0.sdk/System/Library/Frameworks/Photos.framework/Headers/PHAssetResourceManager.h
 - https://github.com/MTACS/iOS-17-Runtime-Headers/blob/main/Frameworks/Photos.framework/PHAssetResourceRequest.h
 - https://github.com/MTACS/iOS-17-Runtime-Headers/blob/main/Frameworks/Photos.framework/PHAssetResourceRequestOptions.h
