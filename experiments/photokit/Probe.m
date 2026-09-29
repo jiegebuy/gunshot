@@ -4,6 +4,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "../../UI/GSPhotoKitCache.h"
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -119,6 +120,7 @@ static void SaveJSON(NSString *name, id value) {
 @property NSString *stopReason;
 @property dispatch_semaphore_t networkDone;
 @property (weak) id lastLoaderDelegate;
+@property GSPhotoKitCache *ownedCache;
 - (instancetype)initWithCommand:(NSDictionary *)command;
 - (BOOL)consume:(NSData *)data;
 - (void)sample;
@@ -170,6 +172,7 @@ static void SaveJSON(NSString *name, id value) {
         unsigned long long free = FreeBytes(); _minimumFree = MIN(_minimumFree, free);
         NSMutableDictionary *sample = [NetworkBytes() mutableCopy];
         [sample addEntriesFromDictionary:TemporaryStorage()];
+        if (self.ownedCache) [sample addEntriesFromDictionary:self.ownedCache.statistics];
         [sample addEntriesFromDictionary:@{@"seconds": @(-[_start timeIntervalSinceNow]), @"freeBytes": @(free),
                                            @"bytes": @(_count), @"progress": @(_progress)}];
         if (_samples.count < 650) [_samples addObject:sample];
@@ -297,13 +300,19 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
         ProbeRangeData *data = [ProbeRangeData new]; data.run = run;
         data.requestedOffset = offset; data.currentOffset = offset;
         data.requestedLength = (NSInteger)MIN(1ULL << 20, end - offset); request.dataRequest = data;
+        GSPhotoKitCache *cache = run.ownedCache;
         dispatch_async(queue, ^{
+            dispatch_block_t read = ^{
             @try {
                 BOOL accepted = [delegate resourceLoader:loader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest *)(id)request];
                 if (!accepted) [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.LoaderRejected" code:1 userInfo:nil]];
             } @catch (__unused NSException *exception) {
                 [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.LoaderException" code:1 userInfo:nil]];
             }
+            };
+            if (cache) {
+                if (![cache perform:read]) [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.CacheClosed" code:1 userInfo:nil]];
+            } else read();
         });
         WaitForRequest(run, request.done, ^{
             request.cancelled = YES;
@@ -466,6 +475,10 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
     while (offset < end && ![run shouldStop]) {
         unsigned long long before = run.count, bytes = MIN(window, end - offset);
         NSSet *temporaryBefore = [NSSet setWithArray:[NSFileManager.defaultManager contentsOfDirectoryAtPath:NSTemporaryDirectory() error:nil] ?: @[]];
+        if ([command[@"ownedCache"] boolValue]) {
+            NSError *cacheError = nil; run.ownedCache = [GSPhotoKitCache create:&cacheError];
+            if (!run.ownedCache) { @synchronized(run) { run.values[@"cacheError"] = Failure(cacheError); } break; }
+        }
         @autoreleasepool {
             NSMutableDictionary *part = [command mutableCopy];
             part[@"startOffset"] = @(offset); part[@"rangeLength"] = @(bytes);
@@ -475,6 +488,18 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
         NSMutableDictionary *sample = [TemporaryStorage() mutableCopy];
         sample[@"loaderAliveAfterWindow"] = @(run.lastLoaderDelegate != nil);
         sample[@"offset"] = @(offset); sample[@"bytes"] = @(run.count - before);
+        if (run.ownedCache) {
+            [sample addEntriesFromDictionary:run.ownedCache.statistics];
+            if (!run.lastLoaderDelegate && ![run.values[@"cancelCompletionMissing"] boolValue]) {
+                NSError *cacheError = nil;
+                sample[@"ownedCacheRemoved"] = @([run.ownedCache remove:&cacheError]);
+                sample[@"ownedCacheError"] = Failure(cacheError);
+            }
+            run.ownedCache = nil;
+            if (![sample[@"ownedCacheFiles"] unsignedLongLongValue]) {
+                @synchronized(run) { run.stopped = YES; run.stopReason = @"cache_scope_not_inherited"; }
+            }
+        }
         if ([command[@"reclaimWindowTemporaryFiles"] boolValue] && !run.lastLoaderDelegate &&
             run.count - before == bytes && [run.values[@"rangeComplete"] boolValue] && ![run.values[@"cancelCompletionMissing"] boolValue]) {
             [sample addEntriesFromDictionary:ReclaimWindow(temporaryBefore, offset, offset + bytes, expected)];
