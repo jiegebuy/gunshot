@@ -181,4 +181,43 @@ func TestRangeSourceRejectsCheckpointFilename(t *testing.T) {
 	if _, err := e.begin(r, "googlephotos"); err == nil {
 		t.Fatal("resource collides with checkpoint")
 	}
+	legacy := r
+	legacy.StreamSourceVersion, legacy.StreamSourceSize = "", 0
+	v, err := e.begin(legacy, "googlephotos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := e.find(v.(map[string]any)["id"].(string))
+	if err := e.suspendStream(j); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.begin(r, "googlephotos"); err == nil {
+		t.Fatal("legacy upgrade overwrites resource with checkpoint")
+	}
+	st, err := os.Stat(filepath.Join(e.jobDir(j.ID), ".source.json"))
+	if err != nil || st.Size() != 0 || j.State != "failed" {
+		t.Fatal("rejected upgrade modified legacy resource")
+	}
+}
+
+func TestRangeSourceUpgradesLegacyZeroByteFailure(t *testing.T) {
+	e := newEngine(t, nil)
+	defer e.Close()
+	j := beginStreamTest(t, e, "range-original")
+	if err := e.suspendStream(j); err != nil {
+		t.Fatal(err)
+	}
+	r := rangeRequest(2 << 20)
+	upgraded, _ := startRange(t, e, r)
+	if upgraded.ID != j.ID || upgraded.StreamSourceVersion != r.StreamSourceVersion {
+		t.Fatal("legacy zero-byte job was not upgraded")
+	}
+	appendStreamTest(t, e, j, 0, bytes.Repeat([]byte{3}, 1<<20))
+	if err := e.suspendStream(j); err != nil {
+		t.Fatal(err)
+	}
+	_, reply := startRange(t, e, r)
+	if reply["resumeOffset"] != int64(1<<20) {
+		t.Fatal("upgraded source lost its resume checkpoint")
+	}
 }

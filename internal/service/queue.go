@@ -251,6 +251,13 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if !validStreamSource(r) {
 		return nil, errRequest
 	}
+	if r.StreamSourceVersion != "" {
+		for _, f := range r.Resources {
+			if strings.EqualFold(f.Name, ".source.json") {
+				return nil, errRequest
+			}
+		}
+	}
 	if old, err := e.findSource(r.Account, r.Quality, r.SourceID); err != nil {
 		return nil, err
 	} else if old != nil {
@@ -269,7 +276,24 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 			if old.StreamSourceVersion != "" && r.StreamSourceVersion != "" {
 				return e.resumeRangeStream(old, r)
 			}
-			return e.resumeStream(old)
+			reply, err := e.resumeStream(old)
+			if err != nil {
+				return nil, err
+			}
+			// Old zero-byte failures have no prefix to verify and can immediately
+			// adopt the range-source checkpoint. Nonempty legacy jobs still replay.
+			if old.StreamSourceVersion == "" && r.StreamSourceVersion != "" && old.Total == 0 {
+				old.StreamSourceVersion, old.StreamSourceSize = r.StreamSourceVersion, r.StreamSourceSize
+				if err := e.checkpointRangeStream(old); err != nil {
+					old.State, old.Error = "failed", "import_interrupted"
+					delete(e.streamVerified, old.ID)
+					return nil, err
+				}
+				if err := e.save(); err != nil {
+					return nil, err
+				}
+			}
+			return reply, nil
 		}
 		return map[string]any{"id": old.ID, "duplicate": true}, nil
 	}
@@ -290,9 +314,6 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	seen := map[string]bool{}
 	var total int64
 	for _, f := range r.Resources {
-		if r.StreamSourceVersion != "" && strings.EqualFold(f.Name, ".source.json") {
-			return nil, errRequest
-		}
 		if !safeName(f.Name) || seen[strings.ToLower(f.Name)] || f.Size < 0 || (f.Size == 0 && !r.Streaming) || f.Size > 100<<30 {
 			return nil, errRequest
 		}

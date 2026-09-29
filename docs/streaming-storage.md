@@ -4,6 +4,21 @@ Single-resource PhotoKit imports can negotiate an unknown-length Scotty upload
 before the resource reader reaches EOF. Live Photos and file-provider imports
 continue to use their complete-resource paths.
 
+The v41 source uses private CloudAsset original-byte ranges for cloud-only
+videos on iOS 27, up to 8 GiB. A 1 MiB probe establishes the resource's opaque
+signature before queue admission. Requests use 1 MiB chunks and reader windows
+of at most 20 MiB, with at most two range sources per host process. Local
+resources, photographs, and earlier systems retain the existing reader.
+An incompatible cloud loader fails explicitly instead of silently starting a
+full-original download. This remains an unsupported private API integration.
+
+Swift TaskLocal ownership propagates from our request into CloudAssets tasks.
+Only tasks carrying an active owned lease redirect item-replacement directories
+into `Library/Caches/GoToHP-PhotoSource`. Other callers retain FileManager's
+normal behavior. A completed window revokes/removes its own directory; there
+is no scan/deletion of the host's general temporary or Photos caches. Marked
+leases left by a terminated process are reclaimed on the next initialization.
+
 ## Bounded queue storage
 
 New streaming producers request `streamBounded` at `begin`. When the response
@@ -33,6 +48,14 @@ Deleting either checkpoint does not permit a fresh upload from a sparse file.
   a deallocated prefix are hashed and checked against its SHA-256 checkpoint;
   retained bytes are compared directly. Preupload remains disabled until all
   previously received bytes have been verified. Nothing is written twice.
+- New range-source jobs persist a private `.source.json` checkpoint containing
+  original signature, expected size, received offset, and SHA-256 state. Every
+  successful append fsyncs its bytes and atomically persists the checkpoint
+  before the native source can release its cache. On restart, a fresh source
+  signature must match; the released hash prefix is restored and the retained
+  tail is rehashed against the checkpoint. Only then is a nonzero offset
+  returned. A partially written tail beyond the checkpoint is truncated.
+  Legacy jobs without this checkpoint continue using verified replay.
 - Missing, expired, replaced, or rewound remote sessions cannot read zeros out
   of a deallocated prefix. The job requires a fresh original import. Selecting
   the source again replaces that precommit job, not an uncertain library commit.
@@ -46,7 +69,7 @@ on both Linux and macOS/APFS, plus native JSON and binary PhotoKit fixtures.
 The C ABI smoke test exercises the production jailed role selector for window
 queries and recovers an interrupted zero-byte import through append and seal.
 
-## Remaining iCloud limitation
+## Public PhotoKit Path
 
 This bounds the application's queue copy, not PhotoKit's own original cache.
 `requestDataForAssetResource` provides no original byte-range/seek parameter.
@@ -70,11 +93,12 @@ for evidence, authentication requirements, and the additional recovery work.
 
 An isolated iPadOS 27 experiment subsequently obtained original-byte ranges
 through the private streaming player-item CloudAsset loader. A 261,547,802-byte
-read matched the normal PhotoKit original's SHA-256 exactly. This is not yet
-part of the production source. A later windowed experiment reclaimed its own
+read matched the normal PhotoKit original's SHA-256 exactly. The v40 source
+predates this integration. A later windowed experiment reclaimed its own
 temporary range files while reading a 247,546,555-byte original, with matching
 full hash and 74,244,096 peak extra temporary allocated bytes. Durable source
-resume and Google upload integration remain unverified.
+resume was subsequently implemented and fault-tested in v41. The installed
+Google pipeline still needs device-side acknowledgement/restart verification.
 See [PhotoKit probe results](../experiments/photokit/RESULTS.md).
 
 Research references:

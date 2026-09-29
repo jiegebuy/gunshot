@@ -97,16 +97,34 @@ it does not yet prove recovery of an interrupted Google upload.
 
 ## Remaining checks
 
-No production cache-eviction policy has been established. No Google receipt,
-durable hash-checkpoint recovery, edited/Live Photo identity matrix, or
-background-suspension recovery has been verified on this path yet.
+The v6/v7 probes subsequently tested the exact `UI/GSPhotoKitRangeSource` used
+by v41, with owned TaskLocal cache scopes. During a 5 MiB request the scope
+contained one range file with 5,267,456 allocated bytes; the host's general
+temporary directory stayed empty. The file had disappeared after reader
+teardown, and the owned scope was removed successfully.
+
+The production reader completed a 94,759,440-byte MOV in 83.388 seconds, with
+first consumed data at 7.219 seconds. Its full SHA-256 matched the normal
+original: `a7fbe0600ed53619b4f9029250bdbc6e481d8fd84c85cedbefe81eb2a1fad832`.
+After process restart, a read from offset 52,428,800 delivered the remaining
+42,330,640 bytes. Both the source signature and the tail hash matched. The
+independently verified tail SHA-256 was
+`b14ba9466edc08a74045f3b4a49bd4e398e1c69da5e87a50ff0c77d00473a795`.
+
+Go tests now verify nonzero resume across engine restart after disk prefix
+deallocation, preserved full hashes, rejection of changed versions/sizes,
+corrupt retained tails/checkpoints, missing or rewound sessions, uncheckpointed
+tail truncation, premature EOF, and storage-checkpoint failure. Native tests
+exercise concurrent TaskLocal scopes without redirecting unrelated callers.
+No Google receipt, edited/Live Photo identity matrix, or background-suspension
+recovery has been verified on this path yet.
 
 Production integration must bind the chosen original and a stable version to
 the saved source offset/hash state, respect existing queue backpressure, and
 only reclaim producer-owned cache after durable consumption. The diagnostic
 reclaimer cannot be copied wholesale into the Photos host: other PhotoKit
-requests can use the host's temporary directory concurrently. Use an isolated
-source ownership scheme or equivalent proven attribution before enabling it.
+requests can use the host's temporary directory concurrently. V41 uses the
+isolated TaskLocal source ownership scheme above instead.
 Keep missing/rewound Google sessions and ambiguous library commits fail-closed.
 An unsupported/changed loader must report an explicit fallback/storage choice,
 not silently cache a multi-GB file while claiming bounded streaming.
