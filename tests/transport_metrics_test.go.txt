@@ -1,0 +1,65 @@
+package backend
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+)
+
+type progressProbeTransport func(*http.Request) (*http.Response, error)
+
+func (f progressProbeTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGunshotTransportPublishesBeforeResponse(t *testing.T) {
+	before := GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64)
+	request, err := http.NewRequest("POST", "https://photos.googleapis.com/data/upload/uploadmedia/interactive?upload_id=fixture", bytes.NewReader(make([]byte, 8192)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := contextTransport{context.Background(), progressProbeTransport(func(r *http.Request) (*http.Response, error) {
+		if _, err := io.CopyN(io.Discard, r.Body, 4096); err != nil {
+			t.Fatal(err)
+		}
+		if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+4096 {
+			t.Fatal("request wrapper did not publish before response")
+		}
+		return nil, io.EOF
+	})}
+	_, _ = transport.RoundTrip(request)
+	if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+4096 {
+		t.Fatal("partial request double-counted")
+	}
+}
+
+func TestGunshotUploadProgressBeforeRequestCompletion(t *testing.T) {
+	before := GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64)
+	body := &gunshotCountedBody{ReadCloser: io.NopCloser(bytes.NewReader(make([]byte, 8192))), upload: true}
+	buffer := make([]byte, 4096)
+	if n, err := body.Read(buffer); n != 4096 || err != nil {
+		t.Fatalf("read %d: %v", n, err)
+	}
+	snapshot := GunshotTransportSnapshot()
+	if snapshot["uploadBodyBytesRead"].(int64) != before+4096 {
+		t.Fatal("in-flight request bytes missing")
+	}
+	if snapshot["recentUploadBodyBytesPerSecond"].(int64) <= 0 {
+		t.Fatal("in-flight rate missing")
+	}
+	if _, err := body.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	gunshotRecordRequest("uploadBody", time.Now(), body.bytes.Load(), nil, io.EOF)
+	if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+8192 {
+		t.Fatal("completion double-counted bytes")
+	}
+	other := &gunshotCountedBody{ReadCloser: io.NopCloser(bytes.NewReader(buffer))}
+	if _, err := other.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if GunshotTransportSnapshot()["uploadBodyBytesRead"].(int64) != before+8192 {
+		t.Fatal("non-upload body counted")
+	}
+}

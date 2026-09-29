@@ -279,8 +279,10 @@ int main(void){@autoreleasepool{
  [app endBackgroundTask:ended];[app endBackgroundTask:ended];assert(ShortEnds==1); // Local and stale ends stay local.
  assert([GSBackgroundUploadSnapshot()[@"deferredTasks"]isEqual:(@{@"begun":@3,@"open":@2,@"handedBack":@0,@"handedBackOpen":@0})]);
  // Moving bytes advance progress even while item counts stand still; idleness does not.
- @synchronized(RealLock){Summary=@{@"profiles":@{@"original":@{@"states":@{@"pending":@2}}},@"conditions":@{@"paused":@NO},@"transport":@{@"recentUploadBodyBytesPerSecond":@4096}};}
+ @synchronized(RealLock){Summary=@{@"profiles":@{@"original":@{@"states":@{@"pending":@2}}},@"conditions":@{@"paused":@NO},@"transport":@{@"uploadBodyBytesRead":@4096}};}
  GSPollBackground();Drain();int64_t moving=first.progress.completedUnitCount;
+ GSPollBackground();Drain();assert(first.progress.completedUnitCount==moving);
+ @synchronized(RealLock){NSMutableDictionary *updated=[Summary mutableCopy];updated[@"transport"]=@{@"uploadBodyBytesRead":@8192};Summary=updated;}
  GSPollBackground();Drain();assert(first.progress.completedUnitCount==moving+1);
  SetWork(YES,2);GSPollBackground();Drain();GSPollBackground();Drain();assert(first.progress.completedUnitCount==moving+1);
  SetWork(YES,0);@synchronized(RealLock){SealDuringSummary=YES;}GSPollBackground();Drain();assert(first.completions==0); // Final seal racing a summary cannot complete the task.

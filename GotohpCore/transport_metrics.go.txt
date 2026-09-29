@@ -15,12 +15,16 @@ import (
 
 type gunshotCountedBody struct {
 	io.ReadCloser
-	bytes atomic.Int64
+	bytes  atomic.Int64
+	upload bool
 }
 
 func (b *gunshotCountedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	b.bytes.Add(int64(n))
+	if b.upload && n > 0 {
+		gunshotRecordUploadBytes(int64(n))
+	}
 	return n, err
 }
 
@@ -36,6 +40,26 @@ var gunshotMetrics struct {
 	authCalls, authMS int64
 	started           time.Time
 	recent            [60]struct{ second, bytes int64 }
+}
+var gunshotUploadBytes atomic.Int64
+
+// Count body bytes as the transport reads them, including requests still in flight.
+// These are bytes handed to HTTP, not acknowledgement of durable server storage.
+func gunshotRecordUploadBytes(n int64) {
+	gunshotUploadBytes.Add(n)
+	gunshotMetrics.Lock()
+	defer gunshotMetrics.Unlock()
+	now := time.Now()
+	if gunshotMetrics.started.IsZero() {
+		gunshotMetrics.started = now
+	}
+	second := now.Unix()
+	slot := &gunshotMetrics.recent[second%60]
+	if slot.second != second {
+		slot.second = second
+		slot.bytes = 0
+	}
+	slot.bytes += n
 }
 
 func gunshotRequestKind(r *http.Request) string {
@@ -93,15 +117,6 @@ func gunshotRecordRequest(kind string, started time.Time, n int64, response *htt
 		value.HTTP2++
 	}
 	gunshotMetrics.kinds[kind] = value
-	if kind == "uploadBody" {
-		now := time.Now().Unix()
-		slot := &gunshotMetrics.recent[now%60]
-		if slot.second != now {
-			slot.second = now
-			slot.bytes = 0
-		}
-		slot.bytes += n
-	}
 }
 func gunshotRecordAuthorization(started time.Time) {
 	gunshotMetrics.Lock()
@@ -131,5 +146,5 @@ func GunshotTransportSnapshot() map[string]any {
 	if !gunshotMetrics.started.IsZero() {
 		seconds = min(seconds, max(1, time.Since(gunshotMetrics.started).Seconds()))
 	}
-	return map[string]any{"requests": requests, "nativeAuthCalls": gunshotMetrics.authCalls, "nativeAuthMeanMs": gunshotMetrics.authMS / max(1, gunshotMetrics.authCalls), "recentUploadBodyBytesPerSecond": int64(float64(sent) / seconds), "windowSeconds": int64(seconds)}
+	return map[string]any{"requests": requests, "nativeAuthCalls": gunshotMetrics.authCalls, "nativeAuthMeanMs": gunshotMetrics.authMS / max(1, gunshotMetrics.authCalls), "recentUploadBodyBytesPerSecond": int64(float64(sent) / seconds), "uploadBodyBytesRead": gunshotUploadBytes.Load(), "windowSeconds": int64(seconds)}
 }

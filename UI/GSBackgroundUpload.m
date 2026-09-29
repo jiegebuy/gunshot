@@ -37,8 +37,8 @@ static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
 static int64_t GSProgressUnits;
-static unsigned long long GSExportedBytes,GSCloudProgressUnits;
-static BOOL GSPolling;
+static unsigned long long GSExportedBytes,GSCloudProgressUnits,GSUploadBytes;
+static BOOL GSPolling,GSUploadBaseline;
 // Google Photos begins UIKit background tasks continuously while it runs, and
 // one of them is begun again at the instant the background budget expires and
 // is never ended. RunningBoard then kills the whole process (0x2182BAD2,
@@ -299,7 +299,8 @@ static void GSPollBackground(void){
     // Item counts can stand still during a large upload; only moving bytes
     // advance intermediate units. A waiting preparation is not progress.
     const int64_t scale=1000,total=GSBackgroundTotal();
-    BOOL active=[summary[@"transport"][@"recentUploadBodyBytesPerSecond"]doubleValue]>0;
+    unsigned long long bytes=[summary[@"transport"][@"uploadBodyBytesRead"]unsignedLongLongValue];
+    BOOL active=GSUploadBaseline&&bytes>GSUploadBytes;GSUploadBytes=bytes;GSUploadBaseline=YES;
     GSProgressUnits=finished?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
     GSTask.progress.totalUnitCount=total;
     GSTask.progress.completedUnitCount=GSProgressUnits;
@@ -317,6 +318,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  if(!count)return;
  NSUInteger epoch=GSFinishBackground(NO,@"replaced");if(epoch!=GSEpoch)return;
  GSCount=MIN(count,(NSUInteger)(INT64_MAX/2000));GSProgressUnits=0;GSExportedBytes=0;GSCloudProgressUnits=0;
+ GSUploadBytes=0;GSUploadBaseline=NO;
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
  UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
   if(epoch!=GSEpoch)return;
