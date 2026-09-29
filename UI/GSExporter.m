@@ -65,7 +65,7 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
   NSURL *url=[directory URLByAppendingPathComponent:r.originalFilename.lastPathComponent];
   if([NSFileManager.defaultManager fileExistsAtPath:url.path])return nil;
   PHAssetResourceRequestOptions *options=[PHAssetResourceRequestOptions new];options.networkAccessAllowed=YES;
-  NSObject *progressLock=[NSObject new];__block NSUInteger cloudUnits=0;__block BOOL progressClosed=NO;
+  NSObject *progressLock=[NSObject new];__block NSUInteger cloudUnits=0;__block BOOL progressClosed=NO,dataStarted=NO;
   if(progress)options.progressHandler=^(double fraction){
    if(!isfinite(fraction)||fraction<=0)return;
    NSUInteger units=(NSUInteger)(MIN(1.0,fraction)*1000);
@@ -80,6 +80,7 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
   // PhotoKit delivers on a serial queue. Keep only the current callback's bytes
   // and reserve enough free disk for the complete exported asset's queue copy.
   PHAssetResourceDataRequestID started=[manager requestDataForAssetResource:r options:options dataReceivedHandler:^(NSData *data){@autoreleasepool{
+   @synchronized(progressLock){dataStarted=YES;}
    if(exportError)return;
    if(!GSWaitForStorage(directory,2*data.length+(32ULL<<20),0,*reservation,NO,NO,authorization,progress,&exportError,^BOOL(NSError **error){
     // Reserve both the immediate export write and its later queue copy.
@@ -93,12 +94,26 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
    if(!exportError)exportError=e;dispatch_semaphore_signal(done);
   }];
   [requestLock lock];requestID=started;BOOL cancelNow=cancelWanted;[requestLock unlock];if(cancelNow)[manager cancelDataRequest:started];
+  NSError *cloudSpaceError=nil;
   while(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC))!=0){
    // An iCloud request may produce no data for a long time. Cancellation must
    // reach PhotoKit even while no dataReceivedHandler is running.
    if(authorization&&!authorization())cancel();
+   // PhotoKit can fill its own full-resource cache before the first callback.
+   // Protect physical space and other exports' copy reservations during that wait.
+   BOOL awaitingData=NO;@synchronized(progressLock){awaitingData=!dataStarted&&!progressClosed;}
+   if(awaitingData&&!cloudSpaceError){
+    @synchronized(GSStorageAdmissionLock()){
+     unsigned long long free=GSStorageFreeBytes(directory),reserved=GSStagingReservedBytes+GSExportReservedBytes;
+     unsigned long long available=free>GSStorageReserve?free-GSStorageReserve:0;
+     if(free<GSStorageReserve||reserved>available||(32ULL<<20)>available-MIN(available,reserved))
+      cloudSpaceError=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available."),@"storage":@{@"freeBytes":@(free),@"reserveBytes":@(GSStorageReserve),@"reservedBytes":@(reserved),@"stage":@"cloud_download"}}];
+    }
+    if(cloudSpaceError)cancel();
+   }
   }
   [file closeAndReturnError:nil];
+  if(cloudSpaceError)exportError=cloudSpaceError;
   if(exportError){if(error)*error=exportError;return nil;}[files addObject:url];
  }
  return files;

@@ -299,6 +299,30 @@ static void TestExportReservations(void){
  assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
+static void TestCloudSpaceLoss(void){
+ CloudStarted=dispatch_semaphore_create(0);CloudRelease=dispatch_semaphore_create(0);
+ dispatch_group_t group=dispatch_group_create();NSUInteger before=Queued;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  NSError *error=nil;
+  assert(!GSImportPhotoIdentifierWithProgress(@"cloud-cache-space-loss",@"fixture@example.com",@"original",nil,^(NSDictionary *event){
+   assert(![event[@"exportedBytesDelta"]unsignedLongLongValue]);
+  },&error));
+  assert([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError);
+  assert([error.userInfo[@"storage"][@"stage"]isEqual:@"cloud_download"]);
+ }});
+ assert(dispatch_semaphore_wait(CloudStarted,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ FreeOverride=GSStorageReserve+(16ULL<<20);
+ NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];
+ while(!atomic_load(&CloudCancel)&&deadline.timeIntervalSinceNow>0)[NSThread sleepForTimeInterval:0.01];
+ assert(atomic_load(&CloudCancel)); // No data callback was needed to cancel the download.
+ dispatch_semaphore_signal(CloudRelease);
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ assert(Queued==before);CloudStarted=nil;CloudRelease=nil;FreeOverride=0;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSImportPhotoIdentifier(@"cloud-cache-recovered",@"fixture@example.com",@"original",nil));
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+}
 static void TestConcurrentSpaceLoss(void){
  NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString]isDirectory:YES];
  assert([NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]);
@@ -475,7 +499,8 @@ int main(void){@autoreleasepool{
  while(!cloudResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(cloudResult&&[cloudResult[@"queued"]unsignedIntegerValue]==1&&[cloudResult[@"exportedBytes"]unsignedLongLongValue]==FixtureSize&&[cloudResult[@"cloudProgressUnits"]unsignedIntegerValue]==1000);
  CloudStarted=nil;CloudRelease=nil;
- TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();TestExportReservations();
+ TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();TestExportReservations();TestCloudSpaceLoss();
+ NSLog(@"PASS low-space cloud cancellation before any data callback and subsequent recovery");
  NSLog(@"PASS aggregate export reservations, atomic copy transfer, blocked lane deferral and export cleanup after cancellation/storage fault");
  NSLog(@"PASS small copies bypass blocked large copies, bounded photo capacity and physical reservation cleanup");
  NSLog(@"PASS real cloud progress before data delivery, monotonic fractions and concurrent byte aggregation");
