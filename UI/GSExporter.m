@@ -226,19 +226,22 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   __block unsigned long long offset=0;
   if(progress)progress(@{@"streamJob":identifier,@"stage":@"streaming"});
   NSArray *read=GSWriteOriginalResources(asset,directory,&reserved,authorization,progress,&failure,^BOOL(NSData *data,NSError **appendError){
+   NSError *chunkError=nil;
+   @try {
    for(NSUInteger start=0;start<data.length;){@autoreleasepool{
 #if GS_JAILED
     NSUInteger length=MIN((NSUInteger)1048576,data.length-start);
     NSData *chunk=[data subdataWithRange:NSMakeRange(start,length)];
-    if(!GSEmbeddedAppend(identifier,0,offset,chunk,appendError))return NO;
+    if(!GSEmbeddedAppend(identifier,0,offset,chunk,&chunkError))return NO;
 #else
     NSUInteger length=MIN((NSUInteger)16384,data.length-start);
     NSData *chunk=[data subdataWithRange:NSMakeRange(start,length)];
-    if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@0,@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},appendError))return NO;
+    if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@0,@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&chunkError))return NO;
 #endif
     start+=length;offset+=length;
     if(progress)progress(@{@"stagedBytesDelta":@(length)});
    }}return YES;
+   } @finally {if(appendError)*appendError=chunkError;}
   });
   if(!read)return nil;
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return nil;}
