@@ -42,7 +42,17 @@ also removes completed synthetic requests using the delegate cancellation
 callback. `windowBytes` reopens a scoped player item for each bounded window,
 while preserving the overall hash. These are experimental lifetime controls,
 not confirmed cache-eviction APIs. Temporary-file logical and allocated bytes
-and weak delegate lifetime are sampled; no cache files are deleted.
+and weak delegate lifetime are sampled.
+
+Version 4 optionally enables `reclaimWindowTemporaryFiles: true` with
+`windowBytes`. After a fully consumed window and confirmed loader release,
+it unlinks only range files newly created in that window in this probe's own
+temporary directory. The directory name, range filename, bounds, file type,
+and logical length must match the observed CloudAssets layout. It rejects
+symlinks, unrelated entries, and pre-existing files; it never touches Photos
+storage. This is an isolated cache-reclamation experiment, not a supported
+CloudAssets cache API or production cleanup policy. Reopen/hash tests are
+required to detect stale internal cache state after this intervention.
 
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded

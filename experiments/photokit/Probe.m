@@ -8,6 +8,7 @@
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static NSString *Documents(void) {
     return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -28,6 +29,38 @@ static NSDictionary *TemporaryStorage(void) {
         }
     }
     return @{@"tempAllocatedBytes": @(allocated), @"tempLogicalBytes": @(logical), @"tempFiles": @(count)};
+}
+// Only reclaim this probe's newly-created, completed range files after its
+// loader is gone. Never scan or delete the Photos library or pre-existing tmp.
+static NSDictionary *ReclaimWindow(NSSet<NSString *> *before, unsigned long long start, unsigned long long end, unsigned long long expected) {
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *root = NSTemporaryDirectory().stringByResolvingSymlinksInPath;
+    NSString *home = [NSHomeDirectory().stringByResolvingSymlinksInPath stringByAppendingString:@"/"];
+    if (![root hasPrefix:home]) return @{@"reclaimError": @"outside_probe_home"};
+    NSString *prefix = [NSString stringWithFormat:@"NSIRD_%@_", NSBundle.mainBundle.infoDictionary[@"CFBundleName"]];
+    NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"^[0-9a-f]{42}_[0-9a-f]{42}_([0-9]+)_([0-9]+)$" options:0 error:nil];
+    unsigned long long count = 0, allocated = 0, skipped = 0, errors = 0;
+    for (NSString *name in [manager contentsOfDirectoryAtPath:root error:nil]) {
+        if ([before containsObject:name] || ![name hasPrefix:prefix]) continue;
+        NSString *directory = [root stringByAppendingPathComponent:name];
+        struct stat ds, fs;
+        if (lstat(directory.fileSystemRepresentation, &ds) || !S_ISDIR(ds.st_mode)) { skipped++; continue; }
+        NSArray<NSString *> *children = [manager contentsOfDirectoryAtPath:directory error:nil];
+        if (children.count != 1) { skipped++; continue; }
+        NSString *child = children.firstObject;
+        NSTextCheckingResult *match = [pattern firstMatchInString:child options:0 range:NSMakeRange(0, child.length)];
+        if (!match) { skipped++; continue; }
+        unsigned long long lower = [[child substringWithRange:[match rangeAtIndex:1]] longLongValue];
+        unsigned long long upper = [[child substringWithRange:[match rangeAtIndex:2]] longLongValue];
+        if (lower >= upper || upper > expected || lower >= end || upper <= start) { skipped++; continue; }
+        NSString *file = [directory stringByAppendingPathComponent:child];
+        if (lstat(file.fileSystemRepresentation, &fs) || !S_ISREG(fs.st_mode) || (unsigned long long)fs.st_size != upper) { skipped++; continue; }
+        if (unlink(file.fileSystemRepresentation)) { errors++; continue; }
+        allocated += (unsigned long long)fs.st_blocks * 512; count++;
+        if (rmdir(directory.fileSystemRepresentation)) errors++;
+    }
+    return @{@"reclaimedFiles": @(count), @"reclaimedAllocatedBytes": @(allocated),
+             @"reclaimSkipped": @(skipped), @"reclaimErrors": @(errors)};
 }
 static NSDictionary *NetworkBytes(void) {
     struct ifaddrs *interfaces = NULL;
@@ -432,6 +465,7 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
     NSMutableArray *windows = [NSMutableArray array];
     while (offset < end && ![run shouldStop]) {
         unsigned long long before = run.count, bytes = MIN(window, end - offset);
+        NSSet *temporaryBefore = [NSSet setWithArray:[NSFileManager.defaultManager contentsOfDirectoryAtPath:NSTemporaryDirectory() error:nil] ?: @[]];
         @autoreleasepool {
             NSMutableDictionary *part = [command mutableCopy];
             part[@"startOffset"] = @(offset); part[@"rangeLength"] = @(bytes);
@@ -441,6 +475,11 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
         NSMutableDictionary *sample = [TemporaryStorage() mutableCopy];
         sample[@"loaderAliveAfterWindow"] = @(run.lastLoaderDelegate != nil);
         sample[@"offset"] = @(offset); sample[@"bytes"] = @(run.count - before);
+        if ([command[@"reclaimWindowTemporaryFiles"] boolValue] && !run.lastLoaderDelegate &&
+            run.count - before == bytes && [run.values[@"rangeComplete"] boolValue] && ![run.values[@"cancelCompletionMissing"] boolValue]) {
+            [sample addEntriesFromDictionary:ReclaimWindow(temporaryBefore, offset, offset + bytes, expected)];
+            sample[@"afterReclaim"] = TemporaryStorage();
+        }
         @synchronized(run) { [windows addObject:sample]; run.values[@"windows"] = [windows copy]; }
         if (run.count - before != bytes || ![run.values[@"rangeComplete"] boolValue]) break;
         offset += bytes;
