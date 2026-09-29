@@ -33,6 +33,17 @@ Modes:
   verifies each returned range length. `startOffset` tests nonzero reads.
   This unsupported diagnostic technique is not part of the production uploader.
 
+Version 3 adds `rangeLength` to loader/file reads. `rangeSHA256` and
+`rangeComplete` describe the requested interval; they do not imply a full-file
+hash. `video-baseline` can seek a local original to verify the same interval.
+For loader experiments, `scopedManager: true` creates a separate image manager
+and cancels/releases its AVAsset after reading. `releaseCompletedRequests: true`
+also removes completed synthetic requests using the delegate cancellation
+callback. `windowBytes` reopens a scoped player item for each bounded window,
+while preserving the overall hash. These are experimental lifetime controls,
+not confirmed cache-eviction APIs. Temporary-file logical and allocated bytes
+and weak delegate lifetime are sampled; no cache files are deleted.
+
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded
 but not changed based on guessed enum values. File URLs are read as raw bytes;

@@ -18,6 +18,17 @@ static NSDictionary *Failure(NSError *error) {
 static unsigned long long FreeBytes(void) {
     return [[NSFileManager.defaultManager attributesOfFileSystemForPath:Documents() error:nil][NSFileSystemFreeSize] unsignedLongLongValue];
 }
+static NSDictionary *TemporaryStorage(void) {
+    unsigned long long allocated = 0, logical = 0, count = 0;
+    NSDirectoryEnumerator *files = [NSFileManager.defaultManager enumeratorAtPath:NSTemporaryDirectory()];
+    for (NSString *relative in files) {
+        struct stat st;
+        if (!lstat([[NSTemporaryDirectory() stringByAppendingPathComponent:relative] fileSystemRepresentation], &st) && S_ISREG(st.st_mode)) {
+            count++; logical += st.st_size; allocated += (unsigned long long)st.st_blocks * 512;
+        }
+    }
+    return @{@"tempAllocatedBytes": @(allocated), @"tempLogicalBytes": @(logical), @"tempFiles": @(count)};
+}
 static NSDictionary *NetworkBytes(void) {
     struct ifaddrs *interfaces = NULL;
     unsigned long long received = 0, sent = 0;
@@ -74,6 +85,7 @@ static void SaveJSON(NSString *name, id value) {
 @property BOOL finalized;
 @property NSString *stopReason;
 @property dispatch_semaphore_t networkDone;
+@property (weak) id lastLoaderDelegate;
 - (instancetype)initWithCommand:(NSDictionary *)command;
 - (BOOL)consume:(NSData *)data;
 - (void)sample;
@@ -93,6 +105,7 @@ static void SaveJSON(NSString *name, id value) {
         _cap = [command[@"maxBytes"] unsignedLongLongValue] ?: (2ULL << 30);
         _cap = MIN(_cap, 8ULL << 30);
         _minimumFree = FreeBytes(); _values[@"initialFreeBytes"] = @(_minimumFree);
+        _values[@"initialTemporaryStorage"] = TemporaryStorage();
         _values[@"initialNetwork"] = NetworkBytes(); CC_SHA256_Init(&_hash);
     }
     return self;
@@ -123,6 +136,7 @@ static void SaveJSON(NSString *name, id value) {
     @synchronized(self) {
         unsigned long long free = FreeBytes(); _minimumFree = MIN(_minimumFree, free);
         NSMutableDictionary *sample = [NetworkBytes() mutableCopy];
+        [sample addEntriesFromDictionary:TemporaryStorage()];
         [sample addEntriesFromDictionary:@{@"seconds": @(-[_start timeIntervalSinceNow]), @"freeBytes": @(free),
                                            @"bytes": @(_count), @"progress": @(_progress)}];
         if (_samples.count < 650) [_samples addObject:sample];
@@ -231,6 +245,7 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
     id<AVAssetResourceLoaderDelegate> delegate = loader.delegate;
     NSString *name = delegate ? NSStringFromClass([delegate class]) : @"nil";
     @synchronized(run) { run.values[@"loaderDelegateClass"] = name; }
+    run.lastLoaderDelegate = delegate;
     if ((! [name hasPrefix:@"CloudAssets."] && ![name hasPrefix:@"CloudAsset."]) || ![delegate respondsToSelector:@selector(resourceLoader:shouldWaitForLoadingOfRequestedResource:)]) {
         @synchronized(run) { run.values[@"rawReadUnavailable"] = @"unsupported_loader_delegate"; } return;
     }
@@ -238,15 +253,17 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
     @synchronized(run) { expected = [run.values[@"sourceBefore"][@"expectedBytes"] unsignedLongLongValue]; }
     unsigned long long start = [command[@"startOffset"] unsignedLongLongValue], offset = start;
     if (!expected || expected > (8ULL << 30) || start >= expected) return;
+    unsigned long long length = [command[@"rangeLength"] unsignedLongLongValue];
+    unsigned long long end = start + MIN(length ?: expected, expected - start);
     @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(1 << 20); }
     dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     NSUInteger ranges = 0;
-    while (offset < expected && ![run shouldStop]) {
+    while (offset < end && ![run shouldStop]) { @autoreleasepool {
         ProbeRangeRequest *request = [ProbeRangeRequest new]; request.done = dispatch_semaphore_create(0);
         request.request = [NSURLRequest requestWithURL:asset.URL];
         ProbeRangeData *data = [ProbeRangeData new]; data.run = run;
         data.requestedOffset = offset; data.currentOffset = offset;
-        data.requestedLength = (NSInteger)MIN(1ULL << 20, expected - offset); request.dataRequest = data;
+        data.requestedLength = (NSInteger)MIN(1ULL << 20, end - offset); request.dataRequest = data;
         dispatch_async(queue, ^{
             @try {
                 BOOL accepted = [delegate resourceLoader:loader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest *)(id)request];
@@ -263,13 +280,25 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
                 [request finishLoadingWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]];
             });
         });
+        if ([command[@"releaseCompletedRequests"] boolValue] && request.finished) {
+            dispatch_sync(queue, ^{
+                if ([delegate respondsToSelector:@selector(resourceLoader:didCancelLoadingRequest:)])
+                    [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)request];
+            });
+        }
         if (request.error || data.currentOffset != (long long)offset + data.requestedLength) {
             @synchronized(run) { run.values[@"rangeError"] = Failure(request.error); run.values[@"rangeShortRead"] = @(data.currentOffset != (long long)offset + data.requestedLength); } break;
         }
         offset += data.requestedLength; ranges++;
         @synchronized(run) { run.values[@"completedRanges"] = @(ranges); run.values[@"nextRangeOffset"] = @(offset); }
+    }}
+    @synchronized(run) { run.values[@"rangeComplete"] = @(offset == end && ![run shouldStop]); }
+    if (![command[@"deferFinish"] boolValue]) {
+        [run finishHash:start == 0 && offset == expected];
+        @synchronized(run) {
+            if ([run.values[@"rangeComplete"] boolValue]) run.values[@"rangeSHA256"] = run.values[@"completeSHA256"] ?: run.values[@"prefixSHA256"];
+        }
     }
-    [run finishHash:start == 0 && offset == expected];
 }
 
 static void ReadResource(ProbeRun *run, PHAssetResource *resource, BOOL transient, BOOL network) {
@@ -290,7 +319,7 @@ static void ReadResource(ProbeRun *run, PHAssetResource *resource, BOOL transien
     WaitForRequest(run, done, ^{ [manager cancelDataRequest:request]; });
 }
 
-static void ReadAVAsset(ProbeRun *run, AVAsset *asset) {
+static void ReadAVAsset(ProbeRun *run, AVAsset *asset, NSDictionary *command) {
     @synchronized(run) { run.values[@"avAssetClass"] = NSStringFromClass(asset.class); }
     if (![asset isKindOfClass:AVURLAsset.class]) {
         @synchronized(run) { run.values[@"rawReadUnavailable"] = @"not_AVURLAsset"; } return;
@@ -307,14 +336,24 @@ static void ReadAVAsset(ProbeRun *run, AVAsset *asset) {
             }
         }
         NSError *error = nil; NSFileHandle *handle = [NSFileHandle fileHandleForReadingFromURL:url error:&error];
+        unsigned long long start = [command[@"startOffset"] unsignedLongLongValue];
+        unsigned long long length = [command[@"rangeLength"] unsignedLongLongValue];
+        unsigned long long remaining = length ?: ULLONG_MAX;
+        if (start && ![handle seekToOffset:start error:&error]) { [handle closeAndReturnError:nil]; handle = nil; }
         BOOL eof = NO;
-        while (handle && ![run shouldStop]) { @autoreleasepool {
-            NSData *chunk = [handle readDataUpToLength:1 << 20 error:&error];
+        while (handle && remaining && ![run shouldStop]) { @autoreleasepool {
+            NSData *chunk = [handle readDataUpToLength:(NSUInteger)MIN(1ULL << 20, remaining) error:&error];
             if (!chunk || !chunk.length) { eof = chunk != nil; break; }
+            remaining -= chunk.length;
             if (![run consume:chunk]) break;
         }}
         [handle closeAndReturnError:nil]; @synchronized(run) { run.values[@"fileError"] = Failure(error); }
-        [run finishHash:eof && !error];
+        [run finishHash:start == 0 && eof && !error];
+        @synchronized(run) {
+            run.values[@"rangeStart"] = @(start);
+            run.values[@"rangeComplete"] = @(!error && ![run shouldStop] && (length ? remaining == 0 : eof));
+            if ([run.values[@"rangeComplete"] boolValue]) run.values[@"rangeSHA256"] = run.values[@"completeSHA256"] ?: run.values[@"prefixSHA256"];
+        }
     } else if ([url.scheme isEqualToString:@"https"]) {
         run.networkDone = dispatch_semaphore_create(0);
         NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
@@ -356,7 +395,8 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
         }
         dispatch_semaphore_signal(done);
     };
-    PHImageManager *manager = PHImageManager.defaultManager; PHImageRequestID request;
+    PHImageManager *manager = [command[@"scopedManager"] boolValue] ? [PHImageManager new] : PHImageManager.defaultManager;
+    PHImageRequestID request;
     if ([command[@"mode"] isEqual:@"player-streaming"] || [command[@"mode"] isEqual:@"range-loader-streaming"]) {
         request = [manager requestPlayerItemForVideo:asset options:options resultHandler:^(AVPlayerItem *item, NSDictionary *info) {
             @synchronized(run) { receivedItem = item; } complete(item.asset, info);
@@ -372,7 +412,44 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
     if (result && ![run shouldStop]) {
         if ([command[@"mode"] isEqual:@"range-loader-streaming"] && [result isKindOfClass:AVURLAsset.class])
             ReadLoaderRanges(run, (AVURLAsset *)result, command);
-        else ReadAVAsset(run, result);
+        else ReadAVAsset(run, result, command);
+    }
+    if ([command[@"scopedManager"] boolValue]) {
+        [manager cancelImageRequest:request]; [result cancelLoading];
+        @synchronized(run) { received = nil; receivedItem = nil; }
+        keepAlive = nil;
+    }
+}
+
+static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
+    unsigned long long expected = [run.values[@"sourceBefore"][@"expectedBytes"] unsignedLongLongValue];
+    unsigned long long start = [command[@"startOffset"] unsignedLongLongValue], offset = start;
+    unsigned long long window = [command[@"windowBytes"] unsignedLongLongValue];
+    if (!window || !expected || expected > (8ULL << 30) || start >= expected) return;
+    window = MAX(1ULL << 20, MIN(window, 64ULL << 20));
+    unsigned long long length = [command[@"rangeLength"] unsignedLongLongValue];
+    unsigned long long end = start + MIN(length ?: expected, expected - start);
+    NSMutableArray *windows = [NSMutableArray array];
+    while (offset < end && ![run shouldStop]) {
+        unsigned long long before = run.count, bytes = MIN(window, end - offset);
+        @autoreleasepool {
+            NSMutableDictionary *part = [command mutableCopy];
+            part[@"startOffset"] = @(offset); part[@"rangeLength"] = @(bytes);
+            part[@"deferFinish"] = @YES; part[@"scopedManager"] = @YES;
+            ReadVideo(run, asset, part);
+        }
+        NSMutableDictionary *sample = [TemporaryStorage() mutableCopy];
+        sample[@"loaderAliveAfterWindow"] = @(run.lastLoaderDelegate != nil);
+        sample[@"offset"] = @(offset); sample[@"bytes"] = @(run.count - before);
+        @synchronized(run) { [windows addObject:sample]; run.values[@"windows"] = [windows copy]; }
+        if (run.count - before != bytes || ![run.values[@"rangeComplete"] boolValue]) break;
+        offset += bytes;
+    }
+    [run finishHash:start == 0 && offset == expected];
+    @synchronized(run) {
+        run.values[@"rangeStart"] = @(start);
+        run.values[@"rangeComplete"] = @(offset == end && ![run shouldStop]);
+        if ([run.values[@"rangeComplete"] boolValue]) run.values[@"rangeSHA256"] = run.values[@"completeSHA256"] ?: run.values[@"prefixSHA256"];
     }
 }
 
@@ -421,6 +498,12 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
     self.lastCommand = identifier; self.busy = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @autoreleasepool { [self execute:command]; }
+        @synchronized(self.run) {
+            self.run.values[@"finalTemporaryStorage"] = TemporaryStorage();
+            self.run.values[@"loaderAliveAfterRun"] = @(self.run.lastLoaderDelegate != nil);
+        }
+        if (![command[@"mode"] isEqual:@"inventory"])
+            SaveJSON([NSString stringWithFormat:@"result-%@.json", command[@"id"]], self.run.snapshot);
         dispatch_async(dispatch_get_main_queue(), ^{ self.busy = [self.run.snapshot[@"cancelCompletionMissing"] boolValue]; });
     });
 }
@@ -446,14 +529,14 @@ static void ReadVideo(ProbeRun *run, PHAsset *asset, NSDictionary *command) {
             if ([mode isEqual:@"resource-transient"] || [mode isEqual:@"resource-baseline"] || [mode isEqual:@"resource-local"]) {
                 ReadResource(run, resource, [mode isEqual:@"resource-transient"], ![mode isEqual:@"resource-local"]);
             } else if ([mode isEqual:@"video-streaming"] || [mode isEqual:@"video-baseline"] || [mode isEqual:@"player-streaming"] || [mode isEqual:@"range-loader-streaming"]) {
-                ReadVideo(run, asset, command);
+                if ([mode isEqual:@"range-loader-streaming"] && [command[@"windowBytes"] unsignedLongLongValue]) ReadVideoWindows(run, asset, command);
+                else ReadVideo(run, asset, command);
             } else { @synchronized(run) { run.values[@"error"] = @"unknown_mode"; } }
             @synchronized(run) { run.values[@"sourceAfter"] = Describe(asset, Original(asset)); }
         }
     } @catch (NSException *exception) { @synchronized(run) { run.values[@"exception"] = exception.name; } }
     [run sample];
     @synchronized(run) { run.values[@"status"] = @"finished"; }
-    SaveJSON([NSString stringWithFormat:@"result-%@.json", command[@"id"]], run.snapshot);
 }
 @end
 int main(int argc, char **argv) {
