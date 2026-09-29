@@ -51,5 +51,26 @@ int main(void){
  puts("PASS real binary bridge: 1 MiB block, tail, replay rejection and seal");
  puts("PASS real Go bridge rejects numeric conditions and applies JSON booleans");
  puts("PASS jailed source lookup reaches the real core while settings lookup stays denied");
+ // Follow the complete bounded-producer protocol through the same native
+ // role selector used on iPad. The PhotoKit mock alone cannot catch a missing
+ // selector entry: that error rejects the first window before any byte append.
+ char *bounded="{\"op\":\"begin\",\"streaming\":true,\"streamBounded\":true,\"sourceID\":\"bounded-original\",\"account\":\"fixture@example.com\",\"quality\":\"original\",\"resources\":[{\"name\":\"stream.mov\",\"size\":0}]}";
+ response=GunshotRequest(bounded,(char *)GSEmbeddedRequestRole("begin"));
+ assert(strstr(response,"\"ok\":true")&&strstr(response,"\"streamBounded\":true"));
+ idStart=strstr(response,"\"id\":\"");assert(idStart);memcpy(id,idStart+6,32);id[32]=0;GunshotFree(response);
+ char window[128];snprintf(window,sizeof(window),"{\"op\":\"stream_window\",\"id\":\"%s\"}",id);
+ response=GunshotRequest(window,"settings");assert(strstr(response,"\"ok\":false"));GunshotFree(response);
+ // Reproduce a v39 zero-byte interruption, then reselect the same source.
+ char suspend[128];snprintf(suspend,sizeof(suspend),"{\"op\":\"stream_suspend\",\"id\":\"%s\"}",id);
+ response=GunshotRequest(suspend,(char *)GSEmbeddedRequestRole("stream_suspend"));assert(strstr(response,"\"ok\":true"));GunshotFree(response);
+ response=GunshotRequest(bounded,(char *)GSEmbeddedRequestRole("begin"));
+ assert(strstr(response,"\"resumed\":true")&&strstr(response,id));GunshotFree(response);
+ response=GunshotRequest(window,(char *)GSEmbeddedRequestRole("stream_window"));
+ assert(strstr(response,"\"ok\":true")&&strstr(response,"\"availableBytes\":68157440"));GunshotFree(response);
+ unsigned char streamBytes[]={1,2,3,4,5};
+ assert(GunshotAppend(id,0,0,streamBytes,sizeof(streamBytes))==1);
+ snprintf(seal,sizeof(seal),"{\"op\":\"seal\",\"id\":\"%s\"}",id);
+ response=GunshotRequest(seal,(char *)GSEmbeddedRequestRole("seal"));assert(strstr(response,"\"ok\":true"));GunshotFree(response);
+ puts("PASS jailed bounded stream: zero-byte recovery, authorized window, first bytes and seal through real core");
  return 0;
 }

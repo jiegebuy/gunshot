@@ -43,6 +43,8 @@ Tests verify actual allocated blocks, original hashes, resumed wire bytes,
 changed replay content, bounded producer admission, interrupted reclamation,
 and rejection of missing/rewound/replaced sessions. CI runs allocation tests
 on both Linux and macOS/APFS, plus native JSON and binary PhotoKit fixtures.
+The C ABI smoke test exercises the production jailed role selector for window
+queries and recovers an interrupted zero-byte import through append and seal.
 
 ## Remaining iCloud limitation
 
