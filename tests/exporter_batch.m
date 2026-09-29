@@ -176,6 +176,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   NSData *chunk=[[NSData alloc]initWithBase64EncodedString:request[@"data"]options:0];assert(chunk.length>0&&chunk.length<=32768);[bytes appendData:chunk];return @{};
  }
  if([op isEqual:@"seal"]){
+  if(StreamingEnabled)assert([request[@"cloudAtFirstData"]integerValue]==1000);
   NSDictionary *job=CopyJob(request[@"id"]);NSArray *received=job[@"received"],*resources=job[@"resources"];
   for(NSUInteger i=0;i<received.count;i++){
    assert([received[i]isEqual:ResourceBytes(resources[i][@"name"])]);

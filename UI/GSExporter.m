@@ -224,8 +224,13 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   identifier=begin[@"id"];if(!identifier)return nil;
   if([begin[@"duplicate"]boolValue]){sealed=YES;return identifier;}
   __block unsigned long long offset=0;
+  __block NSNumber *cloudAtFirstData=nil;
+  GSImportStorageProgress streamProgress=^(NSDictionary *event){
+   if(event[@"streamFirstDataCloudUnits"])cloudAtFirstData=event[@"streamFirstDataCloudUnits"];
+   if(progress)progress(event);
+  };
   if(progress)progress(@{@"streamJob":identifier,@"stage":@"streaming"});
-  NSArray *read=GSWriteOriginalResources(asset,directory,&reserved,authorization,progress,&failure,^BOOL(NSData *data,NSError **appendError){
+  NSArray *read=GSWriteOriginalResources(asset,directory,&reserved,authorization,streamProgress,&failure,^BOOL(NSData *data,NSError **appendError){
    NSError *chunkError=nil;
    @try {
    for(NSUInteger start=0;start<data.length;){@autoreleasepool{
@@ -245,7 +250,9 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   });
   if(!read)return nil;
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return nil;}
-  NSDictionary *result=GSRequest(@{@"op":@"seal",@"id":identifier},&failure);sealed=result!=nil;
+  NSMutableDictionary *seal=[@{@"op":@"seal",@"id":identifier}mutableCopy];
+  if(cloudAtFirstData)seal[@"cloudAtFirstData"]=cloudAtFirstData;
+  NSDictionary *result=GSRequest(seal,&failure);sealed=result!=nil;
   return result[@"id"];
  } @finally {
   if(identifier&&!sealed){

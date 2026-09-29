@@ -224,6 +224,12 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 	case "append":
 		return nil, e.appendChunk(j, r)
 	case "seal":
+		if j.Streaming && r.CloudAtFirstData != nil {
+			if *r.CloudAtFirstData < 0 || *r.CloudAtFirstData > 1000 {
+				return nil, errRequest
+			}
+			j.StreamCloudAtFirstData = r.CloudAtFirstData
+		}
 		return e.seal(j)
 	case "stream_suspend":
 		return nil, e.suspendStream(j)

@@ -37,33 +37,34 @@ func (o Options) valid() bool {
 func validQuality(q string) bool { return q == "original" || q == "saver" || q == "quota" }
 
 type Job struct {
-	StreamUploaded   int64      `json:"streamUploaded,omitempty"`
-	StreamBeforeSeal int64      `json:"streamBeforeSeal,omitempty"`
-	StreamFirstAck   int64      `json:"streamFirstAck,omitempty"`
-	ImportFinished   int64      `json:"importFinished,omitempty"`
-	StreamError      string     `json:"streamError,omitempty"`
-	Streaming        bool       `json:"streaming,omitempty"`      // A single growing PhotoKit resource, not yet sealed.
-	OriginalPolicy   int        `json:"originalPolicy,omitempty"` // 1: original bytes sent without legacy remote-hash shortcut.
-	ID               string     `json:"id"`
-	Account          string     `json:"account"`
-	Quality          string     `json:"quality"`
-	State            string     `json:"state"`
-	CommitStarted    int64      `json:"commitStarted,omitempty"`
-	ProgressUpdated  int64      `json:"progressUpdated,omitempty"`
-	ContentSHA1      string     `json:"contentSHA1,omitempty"`
-	Resources        []Resource `json:"resources"`
-	Created          int64      `json:"created"`
-	Timestamp        int64      `json:"timestamp"`
-	Fingerprint      string     `json:"fingerprint,omitempty"`
-	SourceKey        string     `json:"sourceKey,omitempty"` // Hashed account/quality/source identity; raw PhotoKit ID is never persisted.
-	Attempts         int        `json:"attempts"`
-	Next             int64      `json:"next,omitempty"`
-	Uploaded         int64      `json:"uploaded"`
-	Total            int64      `json:"total"`
-	Error            string     `json:"error,omitempty"`
-	MediaKey         string     `json:"mediaKey,omitempty"`
-	CancelRequested  bool       `json:"cancelRequested,omitempty"`
-	Owner            string     `json:"owner"`
+	StreamCloudAtFirstData *int       `json:"streamCloudAtFirstData,omitempty"`
+	StreamUploaded         int64      `json:"streamUploaded,omitempty"`
+	StreamBeforeSeal       int64      `json:"streamBeforeSeal,omitempty"`
+	StreamFirstAck         int64      `json:"streamFirstAck,omitempty"`
+	ImportFinished         int64      `json:"importFinished,omitempty"`
+	StreamError            string     `json:"streamError,omitempty"`
+	Streaming              bool       `json:"streaming,omitempty"`      // A single growing PhotoKit resource, not yet sealed.
+	OriginalPolicy         int        `json:"originalPolicy,omitempty"` // 1: original bytes sent without legacy remote-hash shortcut.
+	ID                     string     `json:"id"`
+	Account                string     `json:"account"`
+	Quality                string     `json:"quality"`
+	State                  string     `json:"state"`
+	CommitStarted          int64      `json:"commitStarted,omitempty"`
+	ProgressUpdated        int64      `json:"progressUpdated,omitempty"`
+	ContentSHA1            string     `json:"contentSHA1,omitempty"`
+	Resources              []Resource `json:"resources"`
+	Created                int64      `json:"created"`
+	Timestamp              int64      `json:"timestamp"`
+	Fingerprint            string     `json:"fingerprint,omitempty"`
+	SourceKey              string     `json:"sourceKey,omitempty"` // Hashed account/quality/source identity; raw PhotoKit ID is never persisted.
+	Attempts               int        `json:"attempts"`
+	Next                   int64      `json:"next,omitempty"`
+	Uploaded               int64      `json:"uploaded"`
+	Total                  int64      `json:"total"`
+	Error                  string     `json:"error,omitempty"`
+	MediaKey               string     `json:"mediaKey,omitempty"`
+	CancelRequested        bool       `json:"cancelRequested,omitempty"`
+	Owner                  string     `json:"owner"`
 }
 type State struct {
 	CompletionRevision uint64  `json:"completionRevision,omitempty"`
@@ -86,24 +87,25 @@ type FingerprintReceipt struct {
 	Completed      int64  `json:"completed"`
 }
 type Request struct {
-	Streaming bool       `json:"streaming,omitempty"`
-	NativeID  string     `json:"nativeID,omitempty"`
-	SourceID  string     `json:"sourceID,omitempty"`
-	Op        string     `json:"op"`
-	ID        string     `json:"id,omitempty"`
-	Account   string     `json:"account,omitempty"`
-	Secret    string     `json:"secret,omitempty"`
-	Quality   string     `json:"quality,omitempty"`
-	Resources []Resource `json:"resources,omitempty"`
-	Index     int        `json:"index,omitempty"`
-	Offset    int64      `json:"offset,omitempty"`
-	Data      []byte     `json:"data,omitempty"`
-	Timestamp int64      `json:"timestamp,omitempty"`
-	Options   *Options   `json:"options,omitempty"`
-	Cursor    int        `json:"cursor,omitempty"`
-	Online    bool       `json:"online,omitempty"`
-	WiFi      bool       `json:"wifi,omitempty"`
-	Charging  bool       `json:"charging,omitempty"`
+	CloudAtFirstData *int       `json:"cloudAtFirstData,omitempty"`
+	Streaming        bool       `json:"streaming,omitempty"`
+	NativeID         string     `json:"nativeID,omitempty"`
+	SourceID         string     `json:"sourceID,omitempty"`
+	Op               string     `json:"op"`
+	ID               string     `json:"id,omitempty"`
+	Account          string     `json:"account,omitempty"`
+	Secret           string     `json:"secret,omitempty"`
+	Quality          string     `json:"quality,omitempty"`
+	Resources        []Resource `json:"resources,omitempty"`
+	Index            int        `json:"index,omitempty"`
+	Offset           int64      `json:"offset,omitempty"`
+	Data             []byte     `json:"data,omitempty"`
+	Timestamp        int64      `json:"timestamp,omitempty"`
+	Options          *Options   `json:"options,omitempty"`
+	Cursor           int        `json:"cursor,omitempty"`
+	Online           bool       `json:"online,omitempty"`
+	WiFi             bool       `json:"wifi,omitempty"`
+	Charging         bool       `json:"charging,omitempty"`
 }
 type Progress struct {
 	State           string

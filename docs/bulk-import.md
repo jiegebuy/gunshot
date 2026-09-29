@@ -40,6 +40,8 @@ the retained job history. `batchImport.streamFirstDataCloudUnits` records PhotoK
 progress (0..1000) at first data delivery for the latest streaming resource; a
 value of 1000 cannot establish concurrent iCloud network downloading. Full-library
 upload totals remain in `completionRevision`.
+The sealed job also retains this observation as `streamCloudAtFirstData`, so
+device inspection can correlate it with that file's pre-seal acknowledgements.
 
 ## Report Interpretation
 
