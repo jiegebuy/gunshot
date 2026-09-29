@@ -12,7 +12,7 @@ import (
 // every upload also needs, so it must stay in memory: sweeping every terminal
 // job's directory here took the lock for thousands of syscalls per call.
 func (e *Engine) importCapacity() map[string]any {
-	var retained, releasable, buffered int64
+	var retained, releasable, buffered, smallBuffered int64
 	bufferedJobs := 0
 	jobs := 0
 	// Retry cleanup after transient filesystem failures, retaining receipts.
@@ -50,11 +50,14 @@ func (e *Engine) importCapacity() map[string]any {
 		if j.State != "failed" {
 			buffered += size
 			bufferedJobs++
+			if j.Total <= 32<<20 {
+				smallBuffered += size
+			}
 		}
 		switch j.State {
 		case "pending", "preparing", "uploading", "committing":
 			releasable += j.Total
 		}
 	}
-	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused}
+	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused}
 }

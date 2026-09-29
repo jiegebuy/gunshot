@@ -2,9 +2,12 @@
 #import <Foundation/Foundation.h>
 
 // Leave room for iOS and other apps. Allow one oversized asset only after the
-// queue drains; the free-space guard reserves both its export and queue copy.
+// queue contains only the bounded small-file reserve; the free-space guard
+// reserves both its export and queue copy.
 static const unsigned long long GSStorageReserve=1ULL<<30;
 static const unsigned long long GSStorageQueueLimit=1ULL<<30;
+static const unsigned long long GSStorageSmallFileLimit=32ULL<<20;
+static const unsigned long long GSStorageSmallQueueReserve=128ULL<<20;
 static inline unsigned long long GSStorageQueueBudget(unsigned long long free,unsigned long long buffered){
  // Use at most one third of the available working space for queued originals,
  // leaving room for PhotoKit export and its queue copy. Clamp to 1..8 GiB.
@@ -14,6 +17,14 @@ static inline unsigned long long GSStorageQueueBudget(unsigned long long free,un
 }
 static inline BOOL GSStorageQueueFull(unsigned long long retained,NSUInteger jobs,unsigned long long incoming,unsigned long long budget){
  return retained>0&&(retained>=budget||incoming>budget-retained||jobs>=128);
+}
+static inline BOOL GSStorageQueueCanAdmit(unsigned long long buffered,unsigned long long smallBuffered,NSUInteger jobs,unsigned long long incoming,unsigned long long budget,BOOL small){
+ if(jobs>=128)return NO;
+ if(!GSStorageQueueFull(buffered,jobs,incoming,budget))return YES;
+ smallBuffered=MIN(buffered,smallBuffered);
+ // A bounded photo buffer remains usable while an oversized video occupies the queue.
+ if(small&&incoming<=GSStorageSmallFileLimit&&smallBuffered<GSStorageSmallQueueReserve&&incoming<=GSStorageSmallQueueReserve-smallBuffered)return YES;
+ return incoming>budget&&buffered==smallBuffered&&smallBuffered<=GSStorageSmallQueueReserve;
 }
 static inline unsigned long long GSStorageFreeBytes(NSURL *directory){
 #if GS_TEST_STORAGE

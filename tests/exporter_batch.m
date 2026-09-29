@@ -9,7 +9,7 @@
 // Exercise the real PhotoKit exporter, 32 KiB IPC importer and batch worker.
 // Opaque bytes stand in for PhotoKit originals; no codec or network is mocked
 // as successfully decoding these bytes.
-static NSUInteger Queued;
+static atomic_ulong Queued;
 static atomic_ulong Written;
 static BOOL IncludeUnreadable;
 static BOOL RejectAppend;
@@ -18,14 +18,18 @@ static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
 static dispatch_semaphore_t CloudStarted,CloudRelease;
-static NSArray *ExpectedResources;
 static NSMutableArray<NSMutableData *> *Received;
 static NSMutableDictionary<NSString *,NSString *> *SourceJobs;
+static NSMutableDictionary<NSString *,NSDictionary *> *CopyJobs;
+static dispatch_semaphore_t LargeCopyStarted,LargeCopyRelease;
+static dispatch_semaphore_t SmallCopyStarted,SmallCopyRelease;
+static atomic_bool LargeBuffered;
+static atomic_ullong FreeOverride;
 static NSUInteger CapacityWaits,PausedWaits,StorageEvents,CloudCancelled;
 static atomic_ulong FreeReads;
 static BOOL LowSpace,LowSpaceDuringExport;
 static atomic_int CloudCancel;
-unsigned long long GSFixtureFreeBytes(void){FreeReads++;return LowSpace||(LowSpaceDuringExport&&FreeReads>1)?GSStorageReserve:32ULL<<30;}
+unsigned long long GSFixtureFreeBytes(void){FreeReads++;return FreeOverride?FreeOverride:LowSpace||(LowSpaceDuringExport&&FreeReads>1)?GSStorageReserve:32ULL<<30;}
 #if GS_JAILED
 static const NSUInteger FixtureSize=2097165;
 #else
@@ -37,6 +41,21 @@ static NSData *OriginalBytes(BOOL movie){
  if(SlashHeavy)memset(p,0xff,bytes.length);
  memcpy(p,"\0\0\0\x18" "ftyp",8);memcpy(p+8,movie?"qt  ":"heic",4);return bytes;
 }
+static NSData *ResourceBytes(NSString *name){
+ if([name isEqual:@"large.MOV"])return [NSMutableData dataWithLength:(40ULL<<20)+13];
+ return OriginalBytes([name isEqual:@"original.MOV"]);
+}
+static NSDictionary *CopyJob(NSString *identifier){@synchronized(CopyJobs){return CopyJobs[identifier];}}
+static void BeforeAppend(NSDictionary *job,NSUInteger index,unsigned long long offset){
+ if(SmallCopyRelease&&offset==0&&[job[@"resources"][index][@"name"]isEqual:@"original.HEIC"]){
+  dispatch_semaphore_signal(SmallCopyStarted);
+  assert(dispatch_semaphore_wait(SmallCopyRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ }
+ if(LargeCopyRelease&&offset==0&&[job[@"resources"][index][@"name"]isEqual:@"large.MOV"]){
+  dispatch_semaphore_signal(LargeCopyStarted);
+  assert(dispatch_semaphore_wait(LargeCopyRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ }
+}
 @interface PHFetchResult ()
 @property(nonatomic,strong) NSArray *items;
 @end
@@ -45,11 +64,12 @@ static NSData *OriginalBytes(BOOL movie){
 @end
 @implementation PHAsset
 + (PHFetchResult *)fetchAssetsWithLocalIdentifiers:(NSArray *)ids options:(id)options{
- assert(!NSThread.isMainThread&&ids.count==1);
- NSString *identifier=ids.firstObject;PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;asset.fixtureQueueLabel=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));
+ assert(!NSThread.isMainThread&&ids.count<=256);NSMutableArray *items=[NSMutableArray array];
+ for(NSString *identifier in ids){PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;asset.fixtureQueueLabel=@(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));
  asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];asset.mediaType=PHAssetMediaTypeImage;
  if(identifier.intValue==5)asset.mediaSubtypes=PHAssetMediaSubtypePhotoLive;
- PHFetchResult *result=[PHFetchResult new];result.items=@[asset];return result;
+ [items addObject:asset];}
+ PHFetchResult *result=[PHFetchResult new];result.items=items;return result;
 }
 @end
 @interface PHAssetResource ()
@@ -110,11 +130,12 @@ BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread)
 #if GS_JAILED
 BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error){
  assert(!NSThread.isMainThread&&data.length>0&&data.length<=1048576);
+ NSDictionary *job=CopyJob(identifier);BeforeAppend(job,index,offset);
  if(RejectAppend&&offset>=32768){
   NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late binary chunk rejection"}];
   LastAppendError=failure;if(error)*error=failure;return NO;
  }
- NSMutableData *bytes=Received[index];assert(bytes.length==offset);[bytes appendData:data];return YES;
+ NSMutableData *bytes=job[@"received"][index];assert(bytes.length==offset);[bytes appendData:data];return YES;
 }
 #endif
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
@@ -122,6 +143,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert([NSJSONSerialization dataWithJSONObject:request options:0 error:nil].length<=GS_MAX_JSON);
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
  if([op isEqual:@"import_capacity"]){
+  if(LargeBuffered)return @{@"retainedBytes":@(9ULL<<30),@"bufferedBytes":@(9ULL<<30),@"smallBufferedBytes":@0,@"bufferedJobs":@1,@"releasableBytes":@0,@"paused":@NO};
   BOOL full=CapacityWaits>0,paused=PausedWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;
   return @{@"retainedBytes":@(full?(8ULL<<30):0),@"retainedJobs":@(full?128:0),@"releasableBytes":@(full?(8ULL<<30):0),@"paused":paused?@YES:@NO};
  }
@@ -132,28 +154,31 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  }
  if([op isEqual:@"begin"]){
   assert([request[@"quality"]isEqual:@"original"]&&[request[@"account"]isEqual:@"fixture@example.com"]&&[request[@"timestamp"]longLongValue]==123);
-  assert([request[@"sourceID"]length]>0);
-  @synchronized(SourceJobs){SourceJobs[request[@"sourceID"]]=@"fixture-job";}
-  ExpectedResources=request[@"resources"];Received=[NSMutableArray array];
-  for(NSDictionary *resource in ExpectedResources){assert([resource[@"size"]unsignedIntegerValue]==FixtureSize);[Received addObject:[NSMutableData data]];}
-  return @{@"id":@"fixture-job"};
+  NSString *identifier=NSUUID.UUID.UUIDString;
+  if([request[@"sourceID"]length])@synchronized(SourceJobs){SourceJobs[request[@"sourceID"]]=identifier;}
+  NSArray *resources=request[@"resources"];NSMutableArray *received=[NSMutableArray array];
+  for(NSDictionary *resource in resources){assert([resource[@"size"]unsignedIntegerValue]==ResourceBytes(resource[@"name"]).length);[received addObject:[NSMutableData data]];}
+  @synchronized(CopyJobs){CopyJobs[identifier]=@{@"resources":resources,@"received":received};Received=received;}
+  return @{@"id":identifier};
  }
  if([op isEqual:@"append"]){
+  NSDictionary *job=CopyJob(request[@"id"]);BeforeAppend(job,[request[@"index"]unsignedIntegerValue],[request[@"offset"]unsignedLongLongValue]);
   if(RejectAppend&&[request[@"offset"]unsignedIntegerValue]>=32768){
    NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late chunk rejection"}];
    LastAppendError=failure;if(error)*error=failure;return nil;
   }
-  NSMutableData *bytes=Received[[request[@"index"]unsignedIntegerValue]];assert(bytes.length==[request[@"offset"]unsignedIntegerValue]);
+  NSMutableData *bytes=job[@"received"][[request[@"index"]unsignedIntegerValue]];assert(bytes.length==[request[@"offset"]unsignedIntegerValue]);
   NSData *chunk=[[NSData alloc]initWithBase64EncodedString:request[@"data"]options:0];assert(chunk.length>0&&chunk.length<=32768);[bytes appendData:chunk];return @{};
  }
  if([op isEqual:@"seal"]){
-  for(NSUInteger i=0;i<Received.count;i++){
-   BOOL movie=[ExpectedResources[i][@"name"]isEqual:@"original.MOV"];
-   assert([Received[i]isEqual:OriginalBytes(movie)]);
+  NSDictionary *job=CopyJob(request[@"id"]);NSArray *received=job[@"received"],*resources=job[@"resources"];
+  for(NSUInteger i=0;i<received.count;i++){
+   assert([received[i]isEqual:ResourceBytes(resources[i][@"name"])]);
   }
-  Queued++;return @{@"id":@"fixture-job"};
+  @synchronized(CopyJobs){[CopyJobs removeObjectForKey:request[@"id"]];}
+  Queued++;return @{@"id":request[@"id"]};
  }
- if([op isEqual:@"cancel"]){Cancelled++;return @{};}
+ if([op isEqual:@"cancel"]){@synchronized(CopyJobs){[CopyJobs removeObjectForKey:request[@"id"]];}Cancelled++;return @{};}
  assert(NO);return nil;
 }
 static NSDictionary *Run(void){
@@ -164,8 +189,78 @@ static NSDictionary *Run(void){
  while(!done&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(done);return done;
 }
+static void TestIndependentCopies(BOOL constrained){
+ NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString]isDirectory:YES];
+ assert([NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]);
+ NSURL *large=[directory URLByAppendingPathComponent:@"large.MOV"],*small=[directory URLByAppendingPathComponent:@"original.HEIC"];
+ assert([ResourceBytes(@"large.MOV")writeToURL:large atomically:NO]);assert([ResourceBytes(@"original.HEIC")writeToURL:small atomically:NO]);
+ LargeCopyStarted=dispatch_semaphore_create(0);LargeCopyRelease=dispatch_semaphore_create(0);
+ dispatch_semaphore_t smallDone=dispatch_semaphore_create(0),spaceWait=dispatch_semaphore_create(0);
+ dispatch_group_t group=dispatch_group_create();NSUInteger before=Queued;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSImportFilesWithProgress(@[large],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil,nil,nil));
+ }});
+ assert(dispatch_semaphore_wait(LargeCopyStarted,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ LargeBuffered=YES;
+ if(constrained)FreeOverride=GSStorageReserve+(40ULL<<20)+13+FixtureSize-1;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  __block BOOL reported=NO;
+  assert(GSImportFilesWithProgress(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil,^(NSDictionary *event){
+   if(!reported&&[event[@"stage"]isEqual:@"waiting_storage"]){
+    assert([event[@"stagingReservedBytes"]unsignedLongLongValue]==(40ULL<<20)+13);reported=YES;dispatch_semaphore_signal(spaceWait);
+   }
+  },nil));
+  dispatch_semaphore_signal(smallDone);
+ }});
+ if(constrained){
+  assert(dispatch_semaphore_wait(spaceWait,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+  assert(dispatch_semaphore_wait(smallDone,DISPATCH_TIME_NOW)!=0); // Unwritten large bytes still reserve physical space.
+  FreeOverride=0;
+ }
+ assert(dispatch_semaphore_wait(smallDone,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ assert(Queued==before+1); // Small upload is sealed while the large copy has written nothing.
+ dispatch_semaphore_signal(LargeCopyRelease);
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ assert(Queued==before+2);LargeBuffered=NO;LargeCopyStarted=nil;LargeCopyRelease=nil;
+ // A failed copy must release its unused reservation before the next admission.
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  FreeOverride=GSStorageReserve+FixtureSize;RejectAppend=YES;NSError *error=nil;
+  assert(!GSImportFilesWithProgress(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil,nil,&error));assert(error);
+  RejectAppend=NO;
+  assert(GSImportFilesWithProgress(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil,nil,&error));assert(!error);
+  FreeOverride=0;
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
+static void TestConcurrentSpaceLoss(void){
+ NSURL *directory=[NSURL fileURLWithPath:[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString]isDirectory:YES];
+ assert([NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]);
+ NSURL *large=[directory URLByAppendingPathComponent:@"large.MOV"],*small=[directory URLByAppendingPathComponent:@"original.HEIC"];
+ assert([ResourceBytes(@"large.MOV")writeToURL:large atomically:NO]);assert([ResourceBytes(@"original.HEIC")writeToURL:small atomically:NO]);
+ LargeCopyStarted=dispatch_semaphore_create(0);LargeCopyRelease=dispatch_semaphore_create(0);
+ SmallCopyStarted=dispatch_semaphore_create(0);SmallCopyRelease=dispatch_semaphore_create(0);
+ dispatch_semaphore_t largeDone=dispatch_semaphore_create(0);dispatch_group_t group=dispatch_group_create();
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  NSError *error=nil;
+  assert(!GSImportFiles(@[large],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],&error));
+  assert([error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError);dispatch_semaphore_signal(largeDone);
+ }});
+ assert(dispatch_semaphore_wait(LargeCopyStarted,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  assert(GSImportFiles(@[small],@"fixture@example.com",@"original",[NSDate dateWithTimeIntervalSince1970:123],nil));
+ }});
+ assert(dispatch_semaphore_wait(SmallCopyStarted,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ FreeOverride=GSStorageReserve-1;dispatch_semaphore_signal(LargeCopyRelease);
+ // External disk usage must defer the large copy without waiting on the blocked small copy.
+ assert(dispatch_semaphore_wait(largeDone,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+ FreeOverride=0;dispatch_semaphore_signal(SmallCopyRelease);
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+ LargeCopyStarted=nil;LargeCopyRelease=nil;SmallCopyStarted=nil;SmallCopyRelease=nil;
+ [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
 int main(void){@autoreleasepool{
- SourceJobs=[NSMutableDictionary dictionary];
+ SourceJobs=[NSMutableDictionary dictionary];CopyJobs=[NSMutableDictionary dictionary];
  NSDictionary *result=Run();assert(Queued==60&&Written==61&&[result[@"queued"]intValue]==60&&[result[@"failed"]intValue]==0);
  assert([result[@"exportedBytes"]unsignedLongLongValue]==61ULL*FixtureSize&&[result[@"cloudProgressUnits"]unsignedIntegerValue]==61000);
  assert([result[@"stagedBytes"]unsignedLongLongValue]==61ULL*FixtureSize);
@@ -269,6 +364,11 @@ int main(void){@autoreleasepool{
   unsigned long long roomy=GSStorageQueueBudget(23ULL<<30,2231778024ULL);
   assert(roomy>2231778024ULL&&!GSStorageQueueFull(2231778024ULL,1,32ULL<<20,roomy));
   assert(GSStorageQueueBudget(1ULL<<30,0)==GSStorageQueueLimit);
+  assert(GSStorageQueueCanAdmit(9ULL<<30,0,1,FixtureSize,8ULL<<30,YES));
+  assert(!GSStorageQueueCanAdmit((9ULL<<30)+GSStorageSmallQueueReserve,GSStorageSmallQueueReserve,10,FixtureSize,8ULL<<30,YES));
+  assert(!GSStorageQueueCanAdmit(9ULL<<30,0,1,40ULL<<20,8ULL<<30,NO));
+  assert(!GSStorageQueueCanAdmit(9ULL<<30,0,128,FixtureSize,8ULL<<30,YES));
+  assert(GSStorageQueueCanAdmit(64ULL<<20,64ULL<<20,4,9ULL<<30,8ULL<<30,NO));
   CapacityWaits=2;StorageEvents=0;
   assert(GSImportPhotoIdentifierWithProgress(@"capacity-release",@"fixture@example.com",@"original",nil,^(NSDictionary *s){if([s[@"stage"]isEqual:@"waiting_storage"])StorageEvents++;},nil));
   assert(CapacityWaits==0&&StorageEvents==2);
@@ -304,6 +404,8 @@ int main(void){@autoreleasepool{
  while(!cloudResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(cloudResult&&[cloudResult[@"queued"]unsignedIntegerValue]==1&&[cloudResult[@"exportedBytes"]unsignedLongLongValue]==FixtureSize&&[cloudResult[@"cloudProgressUnits"]unsignedIntegerValue]==1000);
  CloudStarted=nil;CloudRelease=nil;
+ TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();
+ NSLog(@"PASS small copies bypass blocked large copies, bounded photo capacity and physical reservation cleanup");
  NSLog(@"PASS real cloud progress before data delivery, monotonic fractions and concurrent byte aggregation");
  NSLog(@"PASS storage backpressure, automatic resume, paused uploads, cancellation, oversized isolation and low-space stream cancellation/recovery");
  NSLog(@"PASS slash-heavy originals fit the actual JSON transport limit with exact bytes");

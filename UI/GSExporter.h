@@ -7,7 +7,7 @@ NSString *GSImportFiles(NSArray<NSURL *> *files, NSString *account, NSString *qu
 // persistent queue identity before any original bytes are exported.
 NSString *GSImportPhotoIdentifier(NSString *localIdentifier, NSString *account, NSString *quality, NSError **error);
 typedef BOOL (^GSImportAuthorizationCheck)(void);
-// Storage state or positive exportedBytesDelta/cloudProgressDelta; PhotoKit
+// Storage state or positive exportedBytesDelta/cloudProgressDelta/stagedBytesDelta; PhotoKit
 // progress callbacks may arrive concurrently on worker queues.
 typedef void (^GSImportStorageProgress)(NSDictionary *status);
 // A free serial lane is reserved per source until export/seal completes. Equal

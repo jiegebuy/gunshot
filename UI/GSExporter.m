@@ -4,31 +4,43 @@
 #import "GSImportStorage.h"
 #include <math.h>
 
-static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned long long incoming,BOOL limitQueue,
- GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
+static unsigned long long GSStagingReservedBytes;
+static NSObject *GSStorageAdmissionLock(void){
+ static NSObject *lock;static dispatch_once_t once;dispatch_once(&once,^{lock=[NSObject new];});return lock;
+}
+static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned long long incoming,unsigned long long ownReservation,BOOL limitQueue,BOOL small,
+ GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error,BOOL (^admit)(NSError **)){
  BOOL waited=NO;NSError *failure=nil;
  @try {
  while(YES){@autoreleasepool{
   if(authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return NO;}
+  NSDictionary *waiting=nil;
+  @synchronized(GSStorageAdmissionLock()){
   NSDictionary *capacity=GSRequest(@{@"op":@"import_capacity"},&failure);if(!capacity)return NO;
   unsigned long long free=GSStorageFreeBytes(directory),retained=[capacity[@"retainedBytes"]unsignedLongLongValue];
   unsigned long long buffered=[(capacity[@"bufferedBytes"]?:capacity[@"retainedBytes"])unsignedLongLongValue];
   NSUInteger bufferedJobs=[(capacity[@"bufferedJobs"]?:capacity[@"retainedJobs"])unsignedIntegerValue];
   unsigned long long budget=GSStorageQueueBudget(free,buffered);
-  BOOL space=free<GSStorageReserve||needed>free-GSStorageReserve;
-  BOOL queue=limitQueue&&GSStorageQueueFull(buffered,bufferedJobs,incoming,budget);
-  // Allow one oversized asset when only small, unresolved failures remain.
-  if(incoming>budget&&buffered<budget&&![capacity[@"releasableBytes"]unsignedLongLongValue])queue=NO;
+  unsigned long long available=free>GSStorageReserve?free-GSStorageReserve:0;
+  BOOL space=free<GSStorageReserve||GSStagingReservedBytes>available||needed>available-MIN(available,GSStagingReservedBytes);
+  unsigned long long smallBuffered=[(capacity[@"smallBufferedBytes"]?:@(buffered))unsignedLongLongValue];
+  BOOL queue=limitQueue&&!GSStorageQueueCanAdmit(buffered,smallBuffered,bufferedJobs,incoming,budget,small);
   BOOL paused=[capacity[@"paused"]boolValue];
-  if(!space&&!queue&&!paused){if(waited&&progress)progress(@{@"stage":@"exporting"});return YES;}
+  if(!space&&!queue&&!paused){
+   if(admit&&!admit(&failure))return NO;
+   if(waited&&progress)progress(@{@"stage":@"exporting"});return YES;
+  }
   // With no room even to begin, wait instead of marking thousands of assets
   // failed in a tight loop. A partially exported oversized asset may be deferred.
   BOOL beforeExport=limitQueue&&incoming==0;
-  if((space||queue)&&!beforeExport&&![capacity[@"releasableBytes"]unsignedLongLongValue]){
+  // An admitted copy must not wait on another copy when external writes consume
+  // reserved space: neither copy can release its reservation while both wait.
+  if((space||queue)&&!beforeExport&&(ownReservation>0||GSStagingReservedBytes==0)&&![capacity[@"releasableBytes"]unsignedLongLongValue]){
    failure=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{NSLocalizedDescriptionKey:GSL(@"Not enough space to prepare this original while keeping free space available."),@"storage":@{@"freeBytes":@(free),@"requiredAdditionalBytes":@(needed),@"reserveBytes":@(GSStorageReserve),@"retainedBytes":@(retained)}}];return NO;
   }
-  waited=YES;
-  if(progress)progress(@{@"stage":paused?@"waiting_upload_resume":@"waiting_storage",@"freeBytes":@(free),@"bufferedBytes":@(buffered),@"retainedBytes":@(retained),@"reserveBytes":@(GSStorageReserve),@"bufferLimitBytes":@(budget)});
+  waiting=@{@"stage":paused?@"waiting_upload_resume":@"waiting_storage",@"freeBytes":@(free),@"bufferedBytes":@(buffered),@"retainedBytes":@(retained),@"reserveBytes":@(GSStorageReserve),@"stagingReservedBytes":@(GSStagingReservedBytes),@"bufferLimitBytes":@(budget)};
+  }
+  waited=YES;if(progress)progress(waiting);
 #if GS_TEST_STORAGE
   [NSThread sleepForTimeInterval:0.001];
 #else
@@ -38,7 +50,7 @@ static BOOL GSWaitForStorage(NSURL *directory,unsigned long long needed,unsigned
  } @finally {if(error)*error=failure;}
 }
 static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *directory,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
- if(!GSWaitForStorage(directory,64ULL<<20,0,YES,authorization,progress,error))return nil;
+ if(!GSWaitForStorage(directory,64ULL<<20,0,0,YES,asset.mediaType==PHAssetMediaTypeImage,authorization,progress,error,nil))return nil;
  NSArray *resources=[PHAssetResource assetResourcesForAsset:asset];NSMutableArray *chosen=[NSMutableArray array];
  PHAssetResourceType type=asset.mediaType==PHAssetMediaTypeVideo?PHAssetResourceTypeVideo:PHAssetResourceTypePhoto;
  for(PHAssetResource *r in resources)if(r.type==type){[chosen addObject:r];break;}
@@ -69,7 +81,7 @@ static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *director
    if(exportError)return;
    NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
    if(exported==0||exported-lastSpaceCheck>=16ULL<<20||now-lastSpaceTime>=1){
-    if(!GSWaitForStorage(directory,exported+2*data.length+(32ULL<<20),0,NO,authorization,progress,&exportError)){cancel();return;}
+    if(!GSWaitForStorage(directory,exported+2*data.length+(32ULL<<20),0,0,NO,NO,authorization,progress,&exportError,nil)){cancel();return;}
     lastSpaceCheck=exported;lastSpaceTime=now;
    }
    if(![file writeData:data error:&exportError]){cancel();return;}
@@ -101,30 +113,31 @@ NSArray<NSURL *> *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error)
  dispatch_sync(exports,^{@autoreleasepool{files=GSWriteOriginalResources(asset,directory,nil,nil,&failure);}});
  if(error)*error=failure;return files;
 }
-static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSString *sourceID,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
+static NSString *GSStageFiles(NSArray<NSURL *> *files,NSArray *resources,unsigned long long totalSize,NSString *account,NSString *quality,NSDate *date,NSString *sourceID,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
  // The caller's NSError ** is autoreleasing storage. Never write it from the
  // per-chunk pool: draining that pool would free the error before ARC retains
  // it in the caller. Keep failures strongly owned until all chunk pools exit.
  NSError *failure=nil;
  @try {
- NSMutableArray *resources=[NSMutableArray array];
- unsigned long long totalSize=0;
- for(NSURL *u in files){NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:u.path error:&failure];if(!attrs||![attrs[NSFileType]isEqual:NSFileTypeRegular])return nil;totalSize+=[attrs[NSFileSize]unsignedLongLongValue];[resources addObject:@{@"name":u.lastPathComponent,@"size":attrs[NSFileSize]}];}
  NSURL *storage=[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
- if(!GSWaitForStorage(storage,totalSize,totalSize,YES,authorization,progress,&failure))return nil;
- if(progress)progress(@{@"stage":@"queueing"});
  NSMutableDictionary *request=[@{@"op":@"begin",@"account":account?:@"",@"quality":quality?:@"original",@"timestamp":@((long long)(date?:NSDate.date).timeIntervalSince1970),@"resources":resources}mutableCopy];
  if(sourceID.length)request[@"sourceID"]=sourceID;
- NSDictionary *begin=GSRequest(request,&failure);
+ __block NSDictionary *begin=nil;__block unsigned long long remaining=0;
+ if(!GSWaitForStorage(storage,totalSize,totalSize,0,YES,totalSize<=GSStorageSmallFileLimit,authorization,progress,&failure,^BOOL(NSError **admissionError){
+  begin=GSRequest(request,admissionError);
+  if([begin[@"id"]length]&&![begin[@"duplicate"]boolValue]){remaining=totalSize;GSStagingReservedBytes+=remaining;}
+  return [begin[@"id"]length]>0;
+ }))return nil;
  NSString *identifier=begin[@"id"];if(!identifier)return nil;
  if([begin[@"duplicate"]boolValue])return identifier;
  BOOL success=NO;
  @try {
+ if(progress)progress(@{@"stage":@"queueing"});
  for(NSUInteger i=0;i<files.count;i++){
   NSFileHandle *f=[NSFileHandle fileHandleForReadingAtPath:files[i].path];if(!f)return nil;
   @try {unsigned long long offset=0,lastSpaceCheck=0;while(YES){@autoreleasepool{
    if(offset==0||offset-lastSpaceCheck>=16ULL<<20){
-    if(!GSWaitForStorage(storage,16ULL<<20,0,NO,authorization,progress,&failure))return nil;
+    if(!GSWaitForStorage(storage,0,0,remaining,NO,NO,authorization,progress,&failure,nil))return nil;
     lastSpaceCheck=offset;
    }
 #if GS_JAILED
@@ -137,13 +150,26 @@ static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *accou
    if(!GSRequest(@{@"op":@"append",@"id":identifier,@"index":@(i),@"offset":@(offset),@"data":[chunk base64EncodedStringWithOptions:0]},&failure))return nil;
 #endif
    offset+=chunk.length;
+   @synchronized(GSStorageAdmissionLock()){remaining-=chunk.length;GSStagingReservedBytes-=chunk.length;}
    // Queue copying/hashing can outlast the system's progress deadline for a large original.
    if(progress)progress(@{@"stagedBytesDelta":@(chunk.length)});
   }}} @finally {[f closeAndReturnError:nil];}
  }
  NSDictionary *sealed=GSRequest(@{@"op":@"seal",@"id":identifier},&failure);success=sealed!=nil;return sealed[@"id"];
- } @finally {if(!success)GSRequest(@{@"op":@"cancel",@"id":identifier},nil);}
+ } @finally {
+  if(!success)GSRequest(@{@"op":@"cancel",@"id":identifier},nil);
+  @synchronized(GSStorageAdmissionLock()){GSStagingReservedBytes-=remaining;}
+ }
  } @finally {if(error)*error=failure;}
+}
+static NSString *GSImportFilesWithSource(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSString *sourceID,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){
+ NSMutableArray *resources=[NSMutableArray array];unsigned long long totalSize=0;
+ for(NSURL *url in files){NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:url.path error:error];if(!attrs||![attrs[NSFileType]isEqual:NSFileTypeRegular])return nil;totalSize+=[attrs[NSFileSize]unsignedLongLongValue];[resources addObject:@{@"name":url.lastPathComponent,@"size":attrs[NSFileSize]}];}
+ static dispatch_queue_t small,large;static dispatch_once_t once;
+ dispatch_once(&once,^{small=dispatch_queue_create("dev.tqmane.gunshot.stage-small",DISPATCH_QUEUE_SERIAL);large=dispatch_queue_create("dev.tqmane.gunshot.stage-large",DISPATCH_QUEUE_SERIAL);});
+ __block NSString *job=nil;__block NSError *failure=nil;
+ dispatch_sync(totalSize<=GSStorageSmallFileLimit?small:large,^{job=GSStageFiles(files,resources,totalSize,account,quality,date,sourceID,authorization,progress,&failure);});
+ if(error)*error=failure;return job;
 }
 NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){
  return GSImportFilesWithSource(files,account,quality,date,nil,nil,nil,error);
@@ -161,11 +187,10 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
  if(!localIdentifier.length||!account.length){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:3 userInfo:nil];return nil;}
  // Reserve any free lane. Hashing sources into fixed lanes strands idle workers
  // behind an unrelated large iCloud video. Equal sources still cannot overlap.
- static dispatch_queue_t imports[GS_IMPORT_LANES],staging;static dispatch_once_t once;
+ static dispatch_queue_t imports[GS_IMPORT_LANES];static dispatch_once_t once;
  static NSCondition *lanes;static NSMutableIndexSet *available;static NSMutableSet *sources;
  dispatch_once(&once,^{
   for(NSUInteger i=0;i<GS_IMPORT_LANES;i++)imports[i]=dispatch_queue_create("dev.tqmane.gunshot.asset-import",DISPATCH_QUEUE_SERIAL);
-  staging=dispatch_queue_create("dev.tqmane.gunshot.asset-staging",DISPATCH_QUEUE_SERIAL);
   lanes=[NSCondition new];available=[NSMutableIndexSet indexSetWithIndexesInRange:NSMakeRange(0,GS_IMPORT_LANES)];sources=[NSMutableSet set];
  });
  [lanes lock];
@@ -198,10 +223,9 @@ NSString *GSImportPhotoIdentifierWithProgress(NSString *localIdentifier,NSString
    // may cross queues. GSExportAsset remains for callers that already own an asset.
    NSArray *files=GSWriteOriginalResources(asset,directory,authorization,progress,&failure);
    if(files&&authorization&&!authorization()){failure=[NSError errorWithDomain:@"Gunshot.Authorization" code:1 userInfo:nil];return;}
-   // Recheck capacity and copy one completed export at a time. This keeps the
-   // queue's disk budget atomic while PhotoKit preparations overlap.
+   // Small and large copies have separate lanes; admission reserves disk atomically.
    NSDate *date=[asset.creationDate copy];
-   if(files)dispatch_sync(staging,^{job=GSImportFilesWithSource(files,account,quality,date,localIdentifier,authorization,progress,&failure);});
+   if(files)job=GSImportFilesWithSource(files,account,quality,date,localIdentifier,authorization,progress,&failure);
   } @finally {[NSFileManager.defaultManager removeItemAtURL:directory error:nil];}
  }});} @finally {
   [lanes lock];[sources removeObject:localIdentifier];[available addIndex:lane];[lanes broadcast];[lanes unlock];

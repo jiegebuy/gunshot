@@ -6,6 +6,7 @@ static NSString *Identity=@"identity-A",*Account=@"a@example.com";
 static NSUInteger Queued,Exports,Fetches,MaxFetch,LiveAssets,PeakAssets;
 static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline,LargeOriginal;
 static NSString *LastDirectory;
+static dispatch_semaphore_t VideoRelease;
 // Preparation runs several workers; fixture counters must not race.
 static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}}
 @interface PHFetchResult ()
@@ -25,7 +26,7 @@ static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}
  // PhotoKit need not preserve requested order and may omit inaccessible IDs.
  for(NSString *identifier in ids.reverseObjectEnumerator){
   if([identifier isEqual:@"missing"])continue;
-  PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];[items addObject:asset];
+  PHAsset *asset=[PHAsset new];asset.localIdentifier=identifier;asset.mediaType=[identifier hasPrefix:@"video-"]?PHAssetMediaTypeVideo:PHAssetMediaTypeImage;asset.creationDate=[NSDate dateWithTimeIntervalSince1970:123];[items addObject:asset];
  }
  PHFetchResult *result=[PHFetchResult new];result.items=items;return result;
 }
@@ -58,6 +59,7 @@ NSString *GSImportFiles(NSArray *files,NSString *account,NSString *quality,NSDat
 NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){
  assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);Count(&Exports);
  if(authorization&&!authorization())return nil;
+ if(VideoRelease&&[identifier hasPrefix:@"video-"])assert(dispatch_semaphore_wait(VideoRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
  if(SwitchDuringExport)dispatch_sync(dispatch_get_main_queue(),^{Identity=@"identity-B";});
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
  if(authorization&&!authorization())return nil;
@@ -91,7 +93,7 @@ int main(void){@autoreleasepool{
  ids[99]=@"missing";ids[777]=NSNull.null;FailExport=YES;
  NSDictionary *result=Run(ids);
  assert(Queued==1997&&[result[@"queued"]unsignedIntegerValue]==1997&&[result[@"failed"]unsignedIntegerValue]==3&&[result[@"remaining"]unsignedIntegerValue]==0);
- assert(Fetches==0&&MaxFetch==0&&PeakAssets==0); // Batch provider no longer retains/fetches PHAsset pages across queues.
+ assert(Fetches>0&&MaxFetch<=256&&PeakAssets<=256&&LiveAssets==0); // Metadata never crosses into preparation queues.
  assert([result[@"stage"]isEqual:@"finished"]&&![result[@"stopReason"]length]);
  NSString *json=[[NSString alloc]initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil]encoding:NSUTF8StringEncoding];
  assert(![json containsString:@"identity-A"]&&![json containsString:@"example.com"]&&![json containsString:@"original.heic"]&&![json containsString:@"private filename"]);
@@ -108,6 +110,23 @@ int main(void){@autoreleasepool{
  assert([result[@"stage"]isEqual:@"finished"]&&![result[@"stopReason"]length]);
  assert([result[@"storageDeferred"]intValue]==1&&[result[@"failed"]intValue]==1&&[result[@"lastStorageFailure"][@"freeBytes"]intValue]==123);
  LargeOriginal=NO;result=Run(@[@"large"]);assert([result[@"queued"]intValue]==1);
+ // Videos come first in the album and never complete until released. Later photos must still queue.
+ NSMutableArray *mixed=[NSMutableArray array];for(NSUInteger i=0;i<20;i++)[mixed addObject:[NSString stringWithFormat:@"video-%lu",(unsigned long)i]];
+ for(NSUInteger i=0;i<6;i++)[mixed addObject:[NSString stringWithFormat:@"photo-%lu",(unsigned long)i]];
+ VideoRelease=dispatch_semaphore_create(0);__block NSDictionary *mixedResult=nil;before=Queued;
+ assert(GSStartBatchImport(mixed.count,@"album",YES,GSPhotoIdentifierProvider(mixed),@"a@example.com",@"identity-A",nil,^(NSDictionary *state){mixedResult=state;}));
+ NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];BOOL photosDone=NO;
+ while(!photosDone&&deadline.timeIntervalSinceNow>0){
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+  @synchronized(NSNull.null){photosDone=Queued==before+6;}
+ }
+ assert(photosDone&&!mixedResult);
+ for(NSUInteger i=0;i<20;i++)dispatch_semaphore_signal(VideoRelease);
+ deadline=[NSDate dateWithTimeIntervalSinceNow:5];
+ while(!mixedResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+ assert(mixedResult&&[mixedResult[@"queued"]unsignedIntegerValue]==mixed.count&&[mixedResult[@"scannedItems"]unsignedIntegerValue]==mixed.count);
+ VideoRelease=nil;
+ NSLog(@"PASS later photos prepare while all video workers are blocked");
  NSLog(@"PASS oversized original is deferred while later photos continue and remains retryable");
  NSLog(@"PASS 2000 identifier-only selections, missing IDs, individual export failure, account switch, cancellation, queue/IPC failure, retry and private batch diagnostics");
 }}

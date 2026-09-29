@@ -269,6 +269,9 @@ static void TestPreparationProgress(void){
  @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"stagedBytes":@1048576};}
  GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1&&replacement.completions==0);
  GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==1);
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"stagedBytes":@1048576,@"scannedItems":@256};}
+ GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==2&&replacement.completions==0);
+ GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==2);
  GSFinishBackground(NO,@"test_progress_end");
 }
 int main(void){@autoreleasepool{

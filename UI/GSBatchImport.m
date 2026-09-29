@@ -41,7 +41,25 @@ static NSString *GSCheckBatchAccount(GSImportBatch *batch){
 }
 static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUInteger workers,
  GSBatchItemProvider provider,NSString *quality,NSMutableDictionary *state,GSBatchProgress progress){
- NSObject *lock=[NSObject new];__block NSUInteger next=0,active=0;
+ // Classify bounded metadata pages on this queue; only identifiers enter workers.
+ NSMutableArray *photos=[NSMutableArray array],*videos=[NSMutableArray array];
+ state[@"stage"]=@"scanning";GSRecordBatch(state);
+ for(NSUInteger base=0;base<count;base+=256){@autoreleasepool{
+  NSString *reason=GSCheckBatchAccount(batch);if(reason)return reason;
+  NSMutableArray *items=[NSMutableArray array],*ids=[NSMutableArray array];
+  for(NSUInteger i=base;i<MIN(count,base+256);i++){
+   id item=provider(i)?:NSNull.null;[items addObject:item];
+   if([item isKindOfClass:NSString.class]&&[item length])[ids addObject:item];
+  }
+  NSMutableSet *videoIDs=[NSMutableSet set];
+  if(ids.count){
+   PHFetchResult *found=[PHAsset fetchAssetsWithLocalIdentifiers:ids options:nil];
+   [found enumerateObjectsUsingBlock:^(PHAsset *asset,NSUInteger i,BOOL *stop){if(asset.mediaType==PHAssetMediaTypeVideo&&asset.localIdentifier)[videoIDs addObject:asset.localIdentifier];}];
+  }
+  for(id item in items){NSMutableArray *target=[videoIDs containsObject:item]?videos:photos;[target addObject:item];}
+  GSRecordPreparation(state,@{@"scannedItems":@(MIN(count,base+256))});
+ }}
+ NSObject *lock=[NSObject new];__block NSUInteger nextPhoto=0,nextVideo=0,active=0;
  __block NSTimeInterval lastUpdate=0;
  NSMutableDictionary *failures=[NSMutableDictionary dictionary];
  dispatch_group_t group=dispatch_group_create();
@@ -50,9 +68,10 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
   while(YES){@autoreleasepool{
    id item=nil;
    @synchronized(lock){
-    if(batch.stopReason||next>=count)break;
-    // A provider is never invoked concurrently and only passes immutable IDs.
-    item=provider(next++);active++;state[@"activePreparations"]=@(active);
+    if(batch.stopReason||(nextPhoto>=photos.count&&nextVideo>=videos.count))break;
+    // Half the workers keep fetching photos even when videos wait on cloud/storage.
+    BOOL video=nextVideo<videos.count&&(nextPhoto>=photos.count||worker<workers/2);
+    item=video?videos[nextVideo++]:photos[nextPhoto++];active++;state[@"activePreparations"]=@(active);
     state[@"stage"]=@"exporting";GSRecordBatch(state);
    }
    NSString *reason=GSCheckBatchAccount(batch);NSError *error=nil;NSString *job=nil;
@@ -77,7 +96,7 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
      NSString *key=job?@"queued":@"failed";state[key]=@([state[key]unsignedIntegerValue]+1);
      if(!job){
       BOOL space=[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
-      NSString *code=!item?@"inaccessible":space?@"storage_deferred":[error.domain isEqual:@"Gunshot.IPC"]?@"queue_rejected":@"export_failed";
+      NSString *code=item==NSNull.null?@"inaccessible":space?@"storage_deferred":[error.domain isEqual:@"Gunshot.IPC"]?@"queue_rejected":@"export_failed";
       failures[code]=@([failures[code]unsignedIntegerValue]+1);
       if(space){state[@"storageDeferred"]=failures[code];state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};}
      }
