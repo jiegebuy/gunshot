@@ -138,7 +138,6 @@
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Đang chờ tải lên giải phóng dung lượng. Quá trình chuẩn bị sẽ tự tiếp tục. Hãy giữ ứng dụng mở.",
   "Preparation is waiting. Turn off Pause uploads to continue.": "Đang chờ chuẩn bị. Tắt Tạm dừng tải lên để tiếp tục.",
   "Not enough space to prepare this original while keeping free space available.": "Không đủ dung lượng để chuẩn bị bản gốc này đồng thời giữ dung lượng trống dự phòng.",
-  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\nĐã bỏ qua %lu bản gốc do thiếu dung lượng. Giải phóng dung lượng rồi chọn lại album để thử lại; các mục đã vào hàng đợi sẽ không bị trùng.",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nChờ máy chủ xác nhận: %lld giây (tối đa 5 phút).",
   "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nChưa có xác nhận từ máy chủ. Kiểm tra Google Photos trước khi tải lại.",
   "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nTải lên không tiến triển trong 2 phút. Tệp được giữ lại. Thử lại sẽ tải tệp từ đầu.",
@@ -146,5 +145,7 @@
   "Prepared %lu / %lu · %lu pending": "Đã chuẩn bị %lu / %lu · %lu mục chờ",
   "Preparing uploads": "Đang chuẩn bị tải lên",
   "Background upload is active. You can switch apps; iOS may stop the task when resources are limited.": "Đang tải lên trong nền. Bạn có thể chuyển ứng dụng; iOS có thể dừng tác vụ khi tài nguyên hạn chế.",
-  "Waiting for uploads to free space. Background preparation will resume automatically.": "Đang chờ tải lên giải phóng dung lượng. Việc chuẩn bị trong nền sẽ tự tiếp tục."
+  "Waiting for uploads to free space. Background preparation will resume automatically.": "Đang chờ tải lên giải phóng dung lượng. Việc chuẩn bị trong nền sẽ tự tiếp tục.",
+  "\n%lu originals are waiting for space and will be retried after preparation. If stopped, free space and select the album again; queued items are deduplicated.": "\n%lu bản gốc đang chờ dung lượng và sẽ được thử lại sau khi chuẩn bị các mục khác. Nếu tác vụ đã dừng, hãy giải phóng dung lượng rồi chọn lại album; các mục đã vào hàng đợi sẽ không bị trùng.",
+  "\n%lu items need server confirmation. Their originals are kept and will not be uploaded again automatically.": "\n%lu mục cần xác nhận từ máy chủ. Bản gốc được giữ lại và sẽ không tự động tải lên lần nữa."
 }

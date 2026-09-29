@@ -59,19 +59,31 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
   for(id item in items){NSMutableArray *target=[videoIDs containsObject:item]?videos:photos;[target addObject:item];}
   GSRecordPreparation(state,@{@"scannedItems":@(MIN(count,base+256))});
  }}
- NSObject *lock=[NSObject new];__block NSUInteger nextPhoto=0,nextVideo=0,active=0;
+ NSObject *lock=[NSObject new];
  __block NSTimeInterval lastUpdate=0;
  NSMutableDictionary *failures=[NSMutableDictionary dictionary];
- dispatch_group_t group=dispatch_group_create();
  state[@"preparationWorkers"]=@(workers);
+ // Retry deferred originals after the other exports release their reservations.
+ // Three passes bound repeated iCloud downloads when an original cannot fit.
+ for(NSUInteger pass=0;pass<3;pass++){
+ __block NSUInteger nextPhoto=0,nextVideo=0,active=0;
+ NSMutableArray *deferredPhotos=[NSMutableArray array],*deferredVideos=[NSMutableArray array];
+ if(pass){
+  state[@"storageRetryPass"]=@(pass);state[@"stage"]=@"waiting_storage";GSRecordBatch(state);
+  for(NSUInteger tick=0;tick<10;tick++){
+   NSString *reason=GSCheckBatchAccount(batch);if(reason)return reason;
+   [NSThread sleepForTimeInterval:0.2];
+  }
+ }
+ dispatch_group_t group=dispatch_group_create();
  for(NSUInteger worker=0;worker<workers;worker++)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
   while(YES){@autoreleasepool{
-   id item=nil;
+   id item=nil;BOOL video=NO;
    @synchronized(lock){
     if(batch.stopReason||(nextPhoto>=photos.count&&(worker!=0||nextVideo>=videos.count)))break;
     // PhotoKit may cache the whole video before delivering any bytes. Bound
     // that unmeasured disk usage to one video; photos keep independent workers.
-    BOOL video=worker==0&&nextVideo<videos.count;
+    video=worker==0&&nextVideo<videos.count;
     item=video?videos[nextVideo++]:photos[nextPhoto++];active++;state[@"activePreparations"]=@(active);
     state[@"stage"]=@"exporting";GSRecordBatch(state);
    }
@@ -93,13 +105,19 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
     // Account/service failures above still stop the batch, rather than skipping
     // the rest of the library when the service is unavailable.
     else {
-     state[@"processed"]=@([state[@"processed"]unsignedIntegerValue]+1);
-     NSString *key=job?@"queued":@"failed";state[key]=@([state[key]unsignedIntegerValue]+1);
-     if(!job){
-      BOOL space=[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
-      NSString *code=item==NSNull.null?@"inaccessible":space?@"storage_deferred":[error.domain isEqual:@"Gunshot.IPC"]?@"queue_rejected":@"export_failed";
-      failures[code]=@([failures[code]unsignedIntegerValue]+1);
-      if(space){state[@"storageDeferred"]=failures[code];state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};}
+     BOOL space=!job&&[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
+     if(space){
+      [(video?deferredVideos:deferredPhotos)addObject:item];
+      if(!pass)state[@"storageDeferred"]=@([state[@"storageDeferred"]unsignedIntegerValue]+1);
+      state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};
+     }else{
+      if(pass)state[@"storageDeferred"]=@([state[@"storageDeferred"]unsignedIntegerValue]-1);
+      state[@"processed"]=@([state[@"processed"]unsignedIntegerValue]+1);
+      NSString *key=job?@"queued":@"failed";state[key]=@([state[key]unsignedIntegerValue]+1);
+      if(!job){
+       NSString *code=item==NSNull.null?@"inaccessible":[error.domain isEqual:@"Gunshot.DuplicateSafety"]?@"commit_outcome_unknown":[error.domain isEqual:@"Gunshot.IPC"]?@"queue_rejected":@"export_failed";
+       failures[code]=@([failures[code]unsignedIntegerValue]+1);
+      }
      }
     }
     state[@"remaining"]=@(count-[state[@"processed"]unsignedIntegerValue]);state[@"failureCodes"]=[failures copy];
@@ -110,6 +128,11 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
   }}
  });
  dispatch_group_wait(group,DISPATCH_TIME_FOREVER);
+ if(batch.stopReason)return batch.stopReason;
+ if(!deferredPhotos.count&&!deferredVideos.count)return nil;
+ photos=deferredPhotos;videos=deferredVideos;
+ }
+ if([state[@"storageDeferred"]unsignedIntegerValue])return @"storage_deferred";
  return batch.stopReason;
 }
 BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchItemProvider provider,

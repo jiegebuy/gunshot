@@ -5,6 +5,8 @@
 static NSString *Identity=@"identity-A",*Account=@"a@example.com";
 static NSUInteger Queued,Exports,Fetches,MaxFetch,LiveAssets,PeakAssets;
 static BOOL FailExport,FailQueue,SwitchDuringExport,CancelDuringExport,Offline,LargeOriginal;
+static BOOL RecoverLarge,UncertainCommit,CancelDuringRetry;
+static NSUInteger LargeAttempts;
 static NSString *LastDirectory;
 static dispatch_semaphore_t VideoRelease;
 static NSUInteger ActiveVideos,PeakVideos,StartedVideos;
@@ -69,7 +71,11 @@ NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
  if(authorization&&!authorization())return nil;
  if([identifier isEqual:@"missing"]){if(error)*error=[NSError errorWithDomain:@"Gunshot" code:4 userInfo:nil];return nil;}
- if(LargeOriginal&&[identifier isEqual:@"large"]){if(error)*error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{@"storage":@{@"freeBytes":@123}}];return nil;}
+ if([identifier isEqual:@"large"]){
+  Count(&LargeAttempts);
+  if(LargeOriginal&&(!RecoverLarge||LargeAttempts==1)){if(error)*error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteOutOfSpaceError userInfo:@{@"storage":@{@"freeBytes":@123}}];return nil;}
+ }
+ if(UncertainCommit){if(error)*error=[NSError errorWithDomain:@"Gunshot.DuplicateSafety" code:1 userInfo:nil];return nil;}
  if(FailExport&&[identifier isEqual:@"500"]){if(error)*error=[NSError errorWithDomain:@"private filename/token must not escape" code:7 userInfo:nil];return nil;}
  if(FailQueue){if(error)*error=[NSError errorWithDomain:@"Gunshot.IPC" code:5 userInfo:nil];return nil;}
  Count(&Queued);return @"job";
@@ -88,7 +94,10 @@ static NSDictionary *Run(NSArray *ids){
  BOOL started=GSStartBatchImport(ids.count,@"picker",YES,GSPhotoIdentifierProvider(ids),@"a@example.com",@"identity-A",nil,^(NSDictionary *state){assert(NSThread.isMainThread);done=state;});assert(started);
  assert(!GSStartBatchImport(1,@"picker",YES,^id(NSUInteger i){return nil;},@"a@example.com",nil,nil,nil));
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:30];
- while(!done&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+ while(!done&&deadline.timeIntervalSinceNow>0){
+  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+  if(CancelDuringRetry&&[GSBatchImportSnapshot()[@"stage"]isEqual:@"waiting_storage"])GSStopBatchImport(NO);
+ }
  assert(done&&![done[@"active"]boolValue]);
  if(LastDirectory)assert(![NSFileManager.defaultManager fileExistsAtPath:LastDirectory]);
  return done;
@@ -110,11 +119,19 @@ int main(void){@autoreleasepool{
  assert(Queued==before&&[result[@"stopReason"]isEqual:@"background_expired"]);
  CancelDuringExport=NO;Offline=YES;result=Run(@[@"0"]);assert([result[@"stopReason"]isEqual:@"service_unavailable"]);
  Offline=NO;result=Run(@[@"0",@"1"]);assert(Queued==before+2&&[result[@"queued"]intValue]==2);
- LargeOriginal=YES;before=Queued;result=Run(@[@"0",@"large",@"1"]);
- assert(Queued==before+2&&[result[@"processed"]intValue]==3&&[result[@"remaining"]intValue]==0);
- assert([result[@"stage"]isEqual:@"finished"]&&![result[@"stopReason"]length]);
- assert([result[@"storageDeferred"]intValue]==1&&[result[@"failed"]intValue]==1&&[result[@"lastStorageFailure"][@"freeBytes"]intValue]==123);
+ LargeOriginal=YES;LargeAttempts=0;before=Queued;result=Run(@[@"0",@"large",@"1"]);
+ assert(Queued==before+2&&[result[@"processed"]intValue]==2&&[result[@"remaining"]intValue]==1&&LargeAttempts==3);
+ assert([result[@"stage"]isEqual:@"stopped"]&&[result[@"stopReason"]isEqual:@"storage_deferred"]);
+ assert([result[@"storageDeferred"]intValue]==1&&[result[@"failed"]intValue]==0&&[result[@"lastStorageFailure"][@"freeBytes"]intValue]==123);
+ RecoverLarge=YES;LargeAttempts=0;before=Queued;result=Run(@[@"0",@"large",@"1"]);
+ assert(Queued==before+3&&LargeAttempts==2&&[result[@"processed"]intValue]==3&&[result[@"remaining"]intValue]==0);
+ assert([result[@"failed"]intValue]==0&&[result[@"storageDeferred"]intValue]==0&&[result[@"stage"]isEqual:@"finished"]);
+ RecoverLarge=NO;
+ CancelDuringRetry=YES;LargeAttempts=0;result=Run(@[@"large"]);CancelDuringRetry=NO;
+ assert(LargeAttempts==1&&[result[@"stopReason"]isEqual:@"cancelled"]&&[result[@"remaining"]intValue]==1&&[result[@"failed"]intValue]==0);
  LargeOriginal=NO;result=Run(@[@"large"]);assert([result[@"queued"]intValue]==1);
+ UncertainCommit=YES;result=Run(@[@"uncertain"]);UncertainCommit=NO;
+ assert([result[@"failureCodes"][@"commit_outcome_unknown"]intValue]==1&&![result[@"failureCodes"][@"export_failed"]intValue]);
  // Videos come first in the album and never complete until released. Later photos must still queue.
  NSMutableArray *mixed=[NSMutableArray array];for(NSUInteger i=0;i<20;i++)[mixed addObject:[NSString stringWithFormat:@"video-%lu",(unsigned long)i]];
  for(NSUInteger i=0;i<6;i++)[mixed addObject:[NSString stringWithFormat:@"photo-%lu",(unsigned long)i]];

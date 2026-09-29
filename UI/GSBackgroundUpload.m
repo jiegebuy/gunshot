@@ -304,12 +304,13 @@ static void GSPollBackground(void){
     const int64_t scale=1000,total=GSBackgroundTotal();
     unsigned long long bytes=[summary[@"transport"][@"uploadBodyBytesRead"]unsignedLongLongValue];
     BOOL active=GSUploadBaseline&&bytes>GSUploadBytes;GSUploadBytes=bytes;GSUploadBaseline=YES;
-    GSProgressUnits=finished?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
+    BOOL allPrepared=finished&&!reason.length&&[batch[@"remaining"]unsignedIntegerValue]==0&&[batch[@"failed"]unsignedIntegerValue]==0;
+    GSProgressUnits=allPrepared?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
     GSTask.progress.totalUnitCount=total;
     GSTask.progress.completedUnitCount=GSProgressUnits;
     [GSTask updateTitle:@"GoToHP" subtitle:[NSString stringWithFormat:GSL(@"Prepared %lu / %lu · %lu pending"),(unsigned long)prepared,(unsigned long)GSCount,(unsigned long)outstanding]];
    }
-   if(finished)GSFinishBackground([batch[@"failed"]unsignedIntegerValue]==0,@"finished");
+   if(finished)GSFinishBackground(!reason.length&&[batch[@"remaining"]unsignedIntegerValue]==0&&[batch[@"failed"]unsignedIntegerValue]==0,reason?:@"finished");
   });
  }});
 }

@@ -138,7 +138,6 @@
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "アップロードによる空き容量の確保を待っています。準備は自動的に再開します。アプリを開いたままにしてください。",
   "Preparation is waiting. Turn off Pause uploads to continue.": "準備は待機中です。「アップロードを一時停止」をオフにして続行してください。",
   "Not enough space to prepare this original while keeping free space available.": "空き容量を確保しながらこのオリジナルを準備するための容量が不足しています。",
-  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n空き容量不足のため %lu 件のオリジナルをスキップしました。空き容量を確保してアルバムを再選択すると再試行できます。キュー内の項目は重複しません。",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nサーバー確認待ち：%lld 秒（最大5分）。",
   "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nサーバーの確認が得られていません。再アップロード前に Google Photos を確認してください。",
   "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\n2分間アップロードが進んでいません。ファイルは保持されています。再試行すると最初からアップロードします。",
@@ -146,5 +145,7 @@
   "Prepared %lu / %lu · %lu pending": "準備済み %lu / %lu · %lu 件待機中",
   "Preparing uploads": "アップロードを準備中",
   "Background upload is active. You can switch apps; iOS may stop the task when resources are limited.": "バックグラウンドアップロード中です。ほかのアプリに切り替えられます。リソースが不足すると iOS がタスクを停止する場合があります。",
-  "Waiting for uploads to free space. Background preparation will resume automatically.": "アップロードによる空き容量の確保を待っています。バックグラウンドでの準備は自動的に再開します。"
+  "Waiting for uploads to free space. Background preparation will resume automatically.": "アップロードによる空き容量の確保を待っています。バックグラウンドでの準備は自動的に再開します。",
+  "\n%lu originals are waiting for space and will be retried after preparation. If stopped, free space and select the album again; queued items are deduplicated.": "\n%lu 件のオリジナルが空き容量を待機中です。他の準備後に再試行します。停止した場合は空き容量を確保してアルバムを再選択してください。キュー内の項目は重複しません。",
+  "\n%lu items need server confirmation. Their originals are kept and will not be uploaded again automatically.": "\n%lu 件はサーバーの確認が必要です。元のファイルは保持され、自動で再アップロードされません。"
 }

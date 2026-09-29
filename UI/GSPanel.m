@@ -510,7 +510,8 @@
  else if([reason isEqual:@"queue_rejected"]||[reason isEqual:@"service_unavailable"]||[reason isEqual:@"local_storage"])help=GSL(@"Preparation stopped. Check the connection, free space and queue, then select the remaining items.");
  else if(reason)help=GSL(@"Preparation stopped. Items already queued are kept.");
  else help=[state[@"failed"]unsignedIntegerValue]?GSL(@"Some originals could not be read. Check photo access and iCloud downloads, then retry the selection."):GS_QUEUED_HELP;
- if([state[@"storageDeferred"]unsignedIntegerValue])help=[help stringByAppendingFormat:GSL(@"\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated."),[state[@"storageDeferred"]unsignedLongValue]];
+ if([state[@"storageDeferred"]unsignedIntegerValue])help=[help stringByAppendingFormat:GSL(@"\n%lu originals are waiting for space and will be retried after preparation. If stopped, free space and select the album again; queued items are deduplicated."),[state[@"storageDeferred"]unsignedLongValue]];
+ if([state[@"failureCodes"][@"commit_outcome_unknown"]unsignedIntegerValue])help=[help stringByAppendingFormat:GSL(@"\n%lu items need server confirmation. Their originals are kept and will not be uploaded again automatically."),[state[@"failureCodes"][@"commit_outcome_unknown"]unsignedLongValue]];
  return [NSString stringWithFormat:@"%@\n%@",counts,help];
 }
 - (void)importAssets:(NSArray<PHAsset *> *)assets{

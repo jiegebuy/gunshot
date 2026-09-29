@@ -138,7 +138,6 @@
   "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.": "Waiting for uploads to free space. Preparation resumes automatically. Keep the app open.",
   "Preparation is waiting. Turn off Pause uploads to continue.": "Preparation is waiting. Turn off Pause uploads to continue.",
   "Not enough space to prepare this original while keeping free space available.": "Not enough space to prepare this original while keeping free space available.",
-  "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.": "\n%lu originals were skipped because of insufficient space. Free space and select the album again to retry; queued items are deduplicated.",
   "\nWaiting for server confirmation: %lld s (limit 5 minutes).": "\nWaiting for server confirmation: %lld s (limit 5 minutes).",
   "\nServer confirmation is unavailable. Check Google Photos before uploading again.": "\nServer confirmation is unavailable. Check Google Photos before uploading again.",
   "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.": "\nNo upload progress for 2 minutes. The file is kept. Retry restarts this file from the beginning.",
@@ -146,5 +145,7 @@
   "Prepared %lu / %lu · %lu pending": "Prepared %lu / %lu · %lu pending",
   "Preparing uploads": "Preparing uploads",
   "Background upload is active. You can switch apps; iOS may stop the task when resources are limited.": "Background upload is active. You can switch apps; iOS may stop the task when resources are limited.",
-  "Waiting for uploads to free space. Background preparation will resume automatically.": "Waiting for uploads to free space. Background preparation will resume automatically."
+  "Waiting for uploads to free space. Background preparation will resume automatically.": "Waiting for uploads to free space. Background preparation will resume automatically.",
+  "\n%lu originals are waiting for space and will be retried after preparation. If stopped, free space and select the album again; queued items are deduplicated.": "\n%lu originals are waiting for space and will be retried after preparation. If stopped, free space and select the album again; queued items are deduplicated.",
+  "\n%lu items need server confirmation. Their originals are kept and will not be uploaded again automatically.": "\n%lu items need server confirmation. Their originals are kept and will not be uploaded again automatically."
 }
