@@ -66,6 +66,7 @@
   "Use Choose photos and videos to add items.": "「写真・動画を選択」から追加できます。",
   "Pending": "待機中",
   "Preparing": "準備中",
+  "Read %@; uploaded %@": "読み込み済み %@、送信済み %@",
   "Uploading": "アップロード中",
   "Committing": "保存を確定中",
   "Completed": "完了",

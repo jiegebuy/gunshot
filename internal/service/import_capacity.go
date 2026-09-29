@@ -23,7 +23,7 @@ func (e *Engine) importCapacity() map[string]any {
 	for _, j := range e.state.Jobs {
 		switch j.State {
 		case "completed", "cancelled":
-			if sweep && validID(j.ID) {
+			if sweep && validID(j.ID) && e.active[j.ID] == nil {
 				_ = os.RemoveAll(e.jobDir(j.ID))
 			}
 			continue
@@ -59,5 +59,5 @@ func (e *Engine) importCapacity() map[string]any {
 			releasable += j.Total
 		}
 	}
-	return map[string]any{"retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused, "storageFault": e.fault}
+	return map[string]any{"streamingImport": e.preuploader != nil, "retainedBytes": retained, "bufferedBytes": buffered, "smallBufferedBytes": smallBuffered, "bufferedJobs": bufferedJobs, "releasableBytes": releasable, "retainedJobs": jobs, "paused": e.state.Options.Paused, "storageFault": e.fault}
 }

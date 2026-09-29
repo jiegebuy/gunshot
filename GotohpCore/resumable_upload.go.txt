@@ -38,6 +38,7 @@ func gunshotNextChunk(current, sent int64, elapsed time.Duration) int64 {
 // Session URLs are bearer capabilities. Keep this sidecar private beside the
 // original; never include it in queue JSON, diagnostic exports or error text.
 type gunshotUploadSession struct {
+	Streaming   bool   `json:"streaming,omitempty"`
 	Version     int    `json:"version"`
 	Protocol    string `json:"protocol"`
 	URL         string `json:"url"`
@@ -58,7 +59,7 @@ func gunshotSessionPath(path string) string {
 // Expose only a capability check to the queue, never the secret session URL.
 func GunshotHasUploadCheckpoint(path string) bool {
 	st, err := os.Stat(path)
-	if err != nil || st.Size() < gunshotResumeThreshold {
+	if err != nil {
 		return false
 	}
 	raw, err := os.ReadFile(gunshotSessionPath(path))
@@ -66,7 +67,7 @@ func GunshotHasUploadCheckpoint(path string) bool {
 		return false
 	}
 	var s gunshotUploadSession
-	return json.Unmarshal(raw, &s) == nil && s.Version == 1 && s.Size == st.Size() && s.Offset >= 0 && s.Offset <= s.Size && gunshotSafeUploadURL(s.URL) && (s.Protocol == "scotty" || s.Protocol == "range")
+	return json.Unmarshal(raw, &s) == nil && s.Version == 1 && (s.Size == st.Size() || (s.Streaming && s.Size == -1 && s.Protocol == "scotty")) && s.Offset >= 0 && s.Offset <= st.Size() && gunshotSafeUploadURL(s.URL) && (s.Protocol == "scotty" || s.Protocol == "range")
 }
 func (a *Api) gunshotAccountKey() string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%t|%t", a.authData, a.saver, a.useQuota)))
@@ -120,6 +121,21 @@ func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadS
 		return nil, err
 	}
 	var s gunshotUploadSession
+	if len(raw) > 1<<20 {
+		return nil, errors.New("invalid private upload checkpoint")
+	}
+	if json.Unmarshal(raw, &s) == nil && s.Streaming && s.Version == 1 && s.Size == -1 && s.Protocol == "scotty" && s.Account == a.gunshotAccountKey() && s.Offset >= 0 && s.Offset <= size && gunshotSafeUploadURL(s.URL) && s.Granularity > 0 && s.Granularity <= 64<<20 && len(s.Finalize) == 0 {
+		// The producer has sealed the full file. Adopt its earlier unknown-size
+		// session; the final request supplies the now-verified complete hash.
+		if hash == "" {
+			return &s, nil
+		}
+		s.Streaming, s.Size, s.SHA1 = false, size, hash
+		if err := gunshotSaveSession(path, &s); err != nil {
+			return nil, err
+		}
+		return &s, nil
+	}
 	if len(raw) > 1<<20 || json.Unmarshal(raw, &s) != nil || s.Version != 1 || s.Size != size || s.Account != a.gunshotAccountKey() || (hash != "" && s.SHA1 != hash) || s.Offset < 0 || s.Offset > s.Size || !gunshotSafeUploadURL(s.URL) || (s.Protocol != "scotty" && s.Protocol != "range") {
 		return nil, errors.New("invalid private upload checkpoint")
 	}
@@ -134,9 +150,6 @@ func (a *Api) gunshotLoadSession(path, hash string, size int64) (*gunshotUploadS
 // Negotiate resumption before sending file bytes. Existing small-file uploads
 // retain their established path; large files require explicit server support.
 func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash string, size int64) (string, error) {
-	if size < gunshotResumeThreshold {
-		return a.GetUploadToken(hash, size)
-	}
 	saved, err := a.gunshotLoadSession(path, hash, size)
 	if err != nil {
 		return "", err
@@ -144,7 +157,14 @@ func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash strin
 	if saved != nil {
 		return saved.URL, nil
 	}
-	body, err := proto.Marshal(&generated.GetUploadToken{F1: 2, F2: 2, F3: 1, F4: 3, FileSizeBytes: size})
+	if size < gunshotResumeThreshold {
+		return a.GetUploadToken(hash, size)
+	}
+	return a.gunshotStartResumable(ctx, path, hash, size)
+}
+
+func (a *Api) gunshotStartResumable(ctx context.Context, path, hash string, size int64) (string, error) {
+	body, err := proto.Marshal(&generated.GetUploadToken{F1: 2, F2: 2, F3: 1, F4: 3, FileSizeBytes: max(0, size)})
 	if err != nil {
 		return "", err
 	}
@@ -162,11 +182,17 @@ func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash strin
 	req.Header.Set("User-Agent", a.userAgent)
 	req.Header.Set("Accept-Language", a.language)
 	req.Header.Set("Content-Type", "application/x-protobuf")
-	req.Header.Set("X-Goog-Hash", "sha1="+hash)
-	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	if hash != "" {
+		req.Header.Set("X-Goog-Hash", "sha1="+hash)
+	}
+	if size >= 0 {
+		req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	}
 	req.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	req.Header.Set("X-Goog-Upload-Command", "start")
-	req.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(size, 10))
+	if size >= 0 {
+		req.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(size, 10))
+	}
 	req.Header.Set("X-Goog-Upload-Header-Content-Type", "application/octet-stream")
 	client := *a.client
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -183,7 +209,7 @@ func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash strin
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("upload session negotiation returned HTTP %d", resp.StatusCode)
 	}
-	s := &gunshotUploadSession{Version: 1, Account: a.gunshotAccountKey(), SHA1: hash, Size: size, Granularity: 256 << 10}
+	s := &gunshotUploadSession{Version: 1, Account: a.gunshotAccountKey(), SHA1: hash, Size: size, Streaming: size < 0, Granularity: 256 << 10}
 	if raw := resp.Header.Get("X-Goog-Upload-URL"); raw != "" {
 		s.Protocol = "scotty"
 		s.URL = raw
@@ -205,6 +231,9 @@ func (a *Api) gunshotGetUploadTokenForFile(ctx context.Context, path, hash strin
 	}
 	if !gunshotSafeUploadURL(s.URL) || s.Granularity <= 0 || s.Granularity > 64<<20 {
 		return "", errors.New("unsupported resumable session parameters")
+	}
+	if s.Streaming && s.Protocol != "scotty" {
+		return "", errors.New("streaming requires a Scotty session")
 	}
 	if _, _, err = a.gunshotResumeRequest(ctx, path, s, 0, 0, nil); err != nil {
 		return "", err
@@ -245,6 +274,9 @@ func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotU
 		command := "upload"
 		if offset+n == s.Size {
 			command = "upload, finalize"
+			if s.SHA1 != "" {
+				req.Header.Set("X-Goog-Hash", "sha1="+s.SHA1)
+			}
 		}
 		if query {
 			command = "query"
@@ -304,7 +336,7 @@ func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotU
 			}
 		} else if query {
 			return 0, nil, errors.New("server omitted resumable offset")
-		} else if resp.StatusCode == http.StatusOK && offset+n < s.Size {
+		} else if resp.StatusCode == http.StatusOK && (s.Streaming || offset+n < s.Size) {
 			// A successful ordinary upload command acknowledges this entire
 			// chunk. Query only after interruption or restart, not every chunk.
 			accepted = offset + n
@@ -326,7 +358,7 @@ func (a *Api) gunshotResumeRequest(ctx context.Context, path string, s *gunshotU
 			return 0, nil, errors.New("invalid acknowledged range")
 		}
 	}
-	if accepted > s.Size || accepted < -1 {
+	if (!s.Streaming && accepted > s.Size) || accepted < -1 {
 		return 0, nil, errors.New("invalid server offset")
 	}
 	return accepted, nil, nil
@@ -337,12 +369,22 @@ func (a *Api) UploadFileWithProgress(ctx context.Context, path, uploadToken stri
 	if err != nil {
 		return ScottyFinalizeToken{}, err
 	}
-	if st.Size() < gunshotResumeThreshold {
+	if st.Size() < gunshotResumeThreshold && !GunshotHasUploadCheckpoint(path) {
 		return a.gunshotUploadFileLegacy(ctx, path, uploadToken, onProgress)
 	}
 	s, err := a.gunshotLoadSession(path, "", st.Size())
 	if err != nil {
 		return ScottyFinalizeToken{}, err
+	}
+	if s != nil && s.Streaming {
+		digest, e := CalculateSHA1(ctx, path)
+		if e != nil {
+			return ScottyFinalizeToken{}, e
+		}
+		s, err = a.gunshotLoadSession(path, base64.StdEncoding.EncodeToString(digest), st.Size())
+		if err != nil {
+			return ScottyFinalizeToken{}, err
+		}
 	}
 	if s == nil {
 		hash, e := CalculateSHA1(ctx, path)

@@ -251,6 +251,9 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if old, err := e.findSource(r.Account, r.Quality, r.SourceID); err != nil {
 		return nil, err
 	} else if old != nil {
+		if r.Streaming && old.Streaming && old.State == "failed" && old.Error == "import_interrupted" && len(r.Resources) == 1 && len(old.Resources) == 1 && old.Resources[0].Name == r.Resources[0].Name && old.Owner == owner {
+			return e.resumeStream(old)
+		}
 		return map[string]any{"id": old.ID, "duplicate": true}, nil
 	}
 	if receipt, err := e.findSourceReceipt(r.Account, r.Quality, r.SourceID); err != nil {
@@ -264,10 +267,13 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 	if !validQuality(r.Quality) || r.Account == "" {
 		return nil, errRequest
 	}
+	if r.Streaming && (len(r.Resources) != 1 || r.SourceID == "" || r.Resources[0].Size != 0) {
+		return nil, errRequest
+	}
 	seen := map[string]bool{}
 	var total int64
 	for _, f := range r.Resources {
-		if !safeName(f.Name) || seen[strings.ToLower(f.Name)] || f.Size <= 0 || f.Size > 100<<30 {
+		if !safeName(f.Name) || seen[strings.ToLower(f.Name)] || f.Size < 0 || (f.Size == 0 && !r.Streaming) || f.Size > 100<<30 {
 			return nil, errRequest
 		}
 		seen[strings.ToLower(f.Name)] = true
@@ -287,6 +293,10 @@ func (e *Engine) begin(r Request, owner string) (any, error) {
 		return nil, err
 	}
 	j := &Job{ID: id, Account: r.Account, Quality: r.Quality, Resources: r.Resources, State: "importing", Created: time.Now().Unix(), Timestamp: r.Timestamp, Total: total, Owner: owner, SourceKey: source}
+	j.Streaming = r.Streaming
+	if r.Streaming {
+		e.streamVerified[id] = 0
+	}
 	for _, f := range r.Resources {
 		file, err := os.OpenFile(filepath.Join(e.jobDir(id), f.Name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
@@ -310,6 +320,9 @@ func (e *Engine) appendChunk(j *Job, r Request) error {
 	return e.appendChunkLimit(j, r, MaxChunk)
 }
 func (e *Engine) appendChunkLimit(j *Job, r Request, limit int) error {
+	if j.Streaming {
+		return e.appendStream(j, r, limit)
+	}
 	if j.State != "importing" || r.Index < 0 || r.Index >= len(j.Resources) || len(r.Data) == 0 || len(r.Data) > limit {
 		return errRequest
 	}
@@ -336,6 +349,9 @@ func (e *Engine) appendChunkLimit(j *Job, r Request, limit int) error {
 }
 func (e *Engine) seal(j *Job) (any, error) {
 	if j.State != "importing" {
+		return nil, errRequest
+	}
+	if j.Streaming && (j.Total <= 0 || e.streamVerified[j.ID] != j.Total) {
 		return nil, errRequest
 	}
 	h := sha256.New()
@@ -365,6 +381,18 @@ func (e *Engine) seal(j *Job) (any, error) {
 		}
 	}
 	fingerprint := hex.EncodeToString(h.Sum(nil))
+	if j.Streaming {
+		j.ImportFinished = time.Now().UnixMilli()
+		j.StreamBeforeSeal = j.StreamUploaded
+		// Scheduling skips this ID until its cancelled preupload worker exits.
+		if cancel := e.active[j.ID]; cancel != nil {
+			cancel()
+		}
+		j.Streaming = false
+		j.Next = 0
+		j.Error = ""
+		delete(e.streamVerified, j.ID)
+	}
 	delete(e.importHashes, j.ID)
 	if receipt, ok := e.fingerprintReceipts[fingerprint]; ok {
 		// A legacy completion may predate source IDs. The first post-upgrade scan
@@ -380,7 +408,9 @@ func (e *Engine) seal(j *Job) (any, error) {
 		if err := e.save(); err != nil {
 			return nil, err
 		}
-		_ = os.RemoveAll(e.jobDir(j.ID))
+		if e.active[j.ID] == nil {
+			_ = os.RemoveAll(e.jobDir(j.ID))
+		}
 		return map[string]any{"id": receipt.ID, "duplicate": true}, nil
 	}
 	for _, old := range e.state.Jobs {
@@ -400,7 +430,9 @@ func (e *Engine) seal(j *Job) (any, error) {
 			if err := e.save(); err != nil {
 				return nil, err
 			}
-			_ = os.RemoveAll(e.jobDir(j.ID))
+			if e.active[j.ID] == nil {
+				_ = os.RemoveAll(e.jobDir(j.ID))
+			}
 			return map[string]any{"id": old.ID, "duplicate": true}, nil
 		}
 	}
@@ -437,6 +469,7 @@ func (e *Engine) Tick() {
 		return
 	}
 	now := time.Now().Unix()
+	e.tickStreams(now)
 	for len(e.active) < e.state.Options.Concurrent {
 		j := e.nextPendingUpload(now)
 		if j == nil {

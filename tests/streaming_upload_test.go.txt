@@ -1,0 +1,93 @@
+package backend
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"io"
+	"net/http"
+	"os"
+	"testing"
+)
+
+func TestGrowingFileUploadsBeforeEOFAndResumesInNewClient(t *testing.T) {
+	a, server, path := resumeFixture(t)
+	data := bytes.Repeat([]byte("original-media-byte-pattern"), 95001)
+	server.size = int64(len(data))
+	prefix := int64(768 << 10)
+	if err := os.WriteFile(path, data[:prefix], 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.client.Transport = gunshotRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("X-Goog-Upload-Command") == "start" && (r.Header.Get("X-Goog-Hash") != "" || r.Header.Get("X-Goog-Upload-Header-Content-Length") != "") {
+			t.Fatal("required full-file metadata before EOF")
+		}
+		if r.Header.Get("X-Goog-Upload-Command") == "upload, finalize" {
+			hash := sha1.Sum(data)
+			if r.Header.Get("X-Goog-Hash") != "sha1="+base64.StdEncoding.EncodeToString(hash[:]) {
+				t.Fatal("missing final hash")
+			}
+		}
+		if r.Header.Get("X-Goog-Upload-Command") == "upload" || r.Header.Get("X-Goog-Upload-Command") == "upload, finalize" {
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(b, data[server.received:server.received+int64(len(b))]) {
+				t.Fatal("wrong bytes")
+			}
+			r.Body = io.NopCloser(bytes.NewReader(b))
+		}
+		return server.RoundTrip(r)
+	})
+	ack, err := a.gunshotPreupload(context.Background(), path, prefix)
+	if err != nil || ack <= 0 || ack >= prefix || server.received != ack {
+		t.Fatalf("no verified pre-EOF upload: %d %v", ack, err)
+	}
+	st, _ := os.Stat(path)
+	if st.Size() != prefix || !GunshotHasUploadCheckpoint(path) {
+		t.Fatal("expected incomplete retained file and session")
+	}
+	// Finish producing, then create a new API object as after process restart.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write(data[prefix:])
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := &Api{client: a.client, authData: a.authData, authResponseCache: a.authResponseCache}
+	ack2, err := next.gunshotPreupload(context.Background(), path, int64(len(data)))
+	if err != nil || ack2 <= ack {
+		t.Fatal("resume failed", ack2, err)
+	}
+	if server.starts != 1 {
+		t.Fatal("replaced existing upload session")
+	}
+	hash := sha1.Sum(data)
+	token, err := next.gunshotGetUploadTokenForFile(context.Background(), path, base64.StdEncoding.EncodeToString(hash[:]), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := next.UploadFileWithProgress(context.Background(), path, token, nil)
+	if err != nil || len(final.Raw) == 0 || server.received != int64(len(data)) || server.starts != 1 {
+		t.Fatal("sealed stream did not finish in same session", err)
+	}
+}
+
+func TestPreuploadRejectsServerAheadOfProducer(t *testing.T) {
+	a, s, path := resumeFixture(t)
+	if err := os.Truncate(path, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.received = 2 << 20
+	if _, err := a.gunshotPreupload(context.Background(), path, 1<<20); err == nil {
+		t.Fatal("accepted bytes outside verified prefix")
+	}
+	if s.chunks != 0 {
+		t.Fatal("sent data despite invalid acknowledgement")
+	}
+}

@@ -14,6 +14,8 @@ static atomic_ulong Written;
 static BOOL IncludeUnreadable;
 static BOOL RejectAppend;
 static BOOL SlashHeavy;
+static BOOL StreamingEnabled,StreamAppendBeforeCompletion;
+static NSUInteger Suspended;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
@@ -129,6 +131,7 @@ static void BeforeAppend(NSDictionary *job,NSUInteger index,unsigned long long o
 BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread);return [identifier isEqual:@"fixture"];} 
 #if GS_JAILED
 BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error){
+ if(StreamingEnabled&&atomic_load(&ActiveExports)>0)StreamAppendBeforeCompletion=YES;
  assert(!NSThread.isMainThread&&data.length>0&&data.length<=1048576);
  NSDictionary *job=CopyJob(identifier);BeforeAppend(job,index,offset);
  if(RejectAppend&&offset>=32768){
@@ -142,6 +145,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  // Match the real transport boundary instead of accepting oversized mocks.
  assert([NSJSONSerialization dataWithJSONObject:request options:0 error:nil].length<=GS_MAX_JSON);
  assert(!NSThread.isMainThread);NSString *op=request[@"op"];
+ if([op isEqual:@"ping"])return @{@"version":@1,@"streamingImport":@(StreamingEnabled)};
  if([op isEqual:@"import_capacity"]){
   if(LargeBuffered)return @{@"retainedBytes":@(9ULL<<30),@"bufferedBytes":@(9ULL<<30),@"smallBufferedBytes":@0,@"bufferedJobs":@1,@"releasableBytes":@0,@"paused":@NO};
   BOOL full=CapacityWaits>0,paused=PausedWaits>0,fault=FaultWaits>0;if(full)CapacityWaits--;if(paused)PausedWaits--;if(fault)FaultWaits--;
@@ -157,11 +161,12 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   NSString *identifier=NSUUID.UUID.UUIDString;
   if([request[@"sourceID"]length])@synchronized(SourceJobs){SourceJobs[request[@"sourceID"]]=identifier;}
   NSArray *resources=request[@"resources"];NSMutableArray *received=[NSMutableArray array];
-  for(NSDictionary *resource in resources){assert([resource[@"size"]unsignedIntegerValue]==ResourceBytes(resource[@"name"]).length);[received addObject:[NSMutableData data]];}
+  for(NSDictionary *resource in resources){assert([resource[@"size"]unsignedIntegerValue]==([request[@"streaming"]boolValue]?0:ResourceBytes(resource[@"name"]).length));[received addObject:[NSMutableData data]];}
   @synchronized(CopyJobs){CopyJobs[identifier]=@{@"resources":resources,@"received":received};Received=received;}
   return @{@"id":identifier};
  }
  if([op isEqual:@"append"]){
+  if(StreamingEnabled&&atomic_load(&ActiveExports)>0)StreamAppendBeforeCompletion=YES;
   NSDictionary *job=CopyJob(request[@"id"]);BeforeAppend(job,[request[@"index"]unsignedIntegerValue],[request[@"offset"]unsignedLongLongValue]);
   if(RejectAppend&&[request[@"offset"]unsignedIntegerValue]>=32768){
    NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late chunk rejection"}];
@@ -179,6 +184,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   Queued++;return @{@"id":request[@"id"]};
  }
  if([op isEqual:@"cancel"]){@synchronized(CopyJobs){[CopyJobs removeObjectForKey:request[@"id"]];}Cancelled++;return @{};}
+ if([op isEqual:@"stream_suspend"]){Suspended++;return @{};}
  assert(NO);return nil;
 }
 static NSDictionary *Run(void){
@@ -499,8 +505,19 @@ int main(void){@autoreleasepool{
  while(!cloudResult&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
  assert(cloudResult&&[cloudResult[@"queued"]unsignedIntegerValue]==1&&[cloudResult[@"exportedBytes"]unsignedLongLongValue]==FixtureSize&&[cloudResult[@"cloudProgressUnits"]unsignedIntegerValue]==1000);
  CloudStarted=nil;CloudRelease=nil;
+ dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
+  StreamingEnabled=YES;StreamAppendBeforeCompletion=NO;NSError *error=nil;
+  assert(GSImportPhotoIdentifier(@"streaming-original",@"fixture@example.com",@"original",&error));
+  assert(!error&&StreamAppendBeforeCompletion);
+  RejectAppend=YES;
+  assert(!GSImportPhotoIdentifier(@"streaming-interrupted",@"fixture@example.com",@"original",&error));
+  assert(error==LastAppendError&&Suspended==1);
+  RejectAppend=NO;StreamingEnabled=NO;
+ }});
+ assert(dispatch_group_wait(group,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))==0);
  TestIndependentCopies(NO);TestIndependentCopies(YES);TestConcurrentSpaceLoss();TestExportReservations();TestCloudSpaceLoss();
  NSLog(@"PASS low-space cloud cancellation before any data callback and subsequent recovery");
+ NSLog(@"PASS PhotoKit callback appends before resource completion and interrupted stream retains its import");
  NSLog(@"PASS aggregate export reservations, atomic copy transfer, blocked lane deferral and export cleanup after cancellation/storage fault");
  NSLog(@"PASS small copies bypass blocked large copies, bounded photo capacity and physical reservation cleanup");
  NSLog(@"PASS real cloud progress before data delivery, monotonic fractions and concurrent byte aggregation");

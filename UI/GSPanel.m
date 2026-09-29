@@ -311,10 +311,11 @@
  }
  if(!self.jobs.count){cell.textLabel.text=GSL(@"No uploads yet");cell.detailTextLabel.text=GSL(@"Use Choose photos and videos to add items.");cell.imageView.image=[UIImage systemImageNamed:@"tray"];cell.selectionStyle=UITableViewCellSelectionStyleNone;return cell;}
  NSDictionary *job=self.jobs[path.row];NSArray *resources=job[@"resources"];
- NSString *state=job[@"state"];NSDictionary *states=@{@"pending":GSL(@"Pending"),@"preparing":GSL(@"Preparing"),@"uploading":GSL(@"Uploading"),@"committing":GSL(@"Committing"),@"completed":GSL(@"Completed"),@"failed":GSL(@"Failed"),@"cancelled":GSL(@"Cancelled")};
+ NSString *state=job[@"state"];NSDictionary *states=@{@"importing":GSL(@"Preparing"),@"pending":GSL(@"Pending"),@"preparing":GSL(@"Preparing"),@"uploading":GSL(@"Uploading"),@"committing":GSL(@"Committing"),@"completed":GSL(@"Completed"),@"failed":GSL(@"Failed"),@"cancelled":GSL(@"Cancelled")};
  cell.textLabel.text=resources.firstObject[@"name"]?:GSL(@"Media");
  long long uploaded=[job[@"uploaded"]longLongValue],total=[job[@"total"]longLongValue];
  NSString *sizes=[NSString stringWithFormat:@"%@ / %@",[NSByteCountFormatter stringFromByteCount:uploaded countStyle:NSByteCountFormatterCountStyleFile],[NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]];
+ if([job[@"streaming"]boolValue])sizes=[NSString stringWithFormat:GSL(@"Read %@; uploaded %@"),[NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile],[NSByteCountFormatter stringFromByteCount:uploaded countStyle:NSByteCountFormatterCountStyleFile]];
  cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ · %@\n%@",states[state?:@""]?:GSL(@"Checking status"),[self qualityTitle:job[@"quality"]],sizes];
  cell.imageView.image=[UIImage systemImageNamed:[state isEqual:@"completed"]?@"checkmark.circle.fill":[state isEqual:@"failed"]?@"exclamationmark.circle":@"icloud.and.arrow.up"];
  BOOL uncertain=[@[@"commit_outcome_unknown",@"commit_timeout_unknown"]containsObject:job[@"error"]?:@""];

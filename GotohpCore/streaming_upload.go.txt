@@ -1,0 +1,88 @@
+package backend
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+)
+
+// Transfer only a durable, producer-verified prefix. The queue serializes calls
+// per job and waits for this worker before handing a sealed file to UploadFile.
+// This function never finalizes or commits media, including at a chunk boundary.
+func GunshotPreupload(ctx context.Context, path, account, quality string, available int64) (int64, error) {
+	a, err := NewApi(ApiOptions{Account: account, Saver: quality == "saver", UseQuota: quality == "quota"})
+	if err != nil {
+		return 0, err
+	}
+	a.client.Transport = contextTransport{ctx, a.client.Transport}
+	return a.gunshotPreupload(ctx, path, available)
+}
+
+func (a *Api) gunshotPreupload(ctx context.Context, path string, available int64) (int64, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || available < 0 || available > st.Size() {
+		return 0, errors.New("invalid stream prefix")
+	}
+	// A server checkpoint must never get ahead of our durable local prefix.
+	if err = f.Sync(); err != nil {
+		return 0, err
+	}
+	load := func() (*gunshotUploadSession, error) {
+		raw, err := os.ReadFile(gunshotSessionPath(path))
+		if err != nil {
+			return nil, err
+		}
+		var s gunshotUploadSession
+		if len(raw) > 1<<20 || json.Unmarshal(raw, &s) != nil || !s.Streaming || s.Version != 1 || s.Size != -1 || s.Protocol != "scotty" || s.Account != a.gunshotAccountKey() || s.Offset < 0 || s.Offset > available || len(s.Finalize) != 0 || !gunshotSafeUploadURL(s.URL) || s.Granularity <= 0 || s.Granularity > 64<<20 {
+			return nil, errors.New("invalid stream checkpoint")
+		}
+		return &s, nil
+	}
+	s, err := load()
+	if os.IsNotExist(err) {
+		if _, err = a.gunshotStartResumable(ctx, path, "", -1); err != nil {
+			return 0, err
+		}
+		s, err = load()
+	}
+	if err != nil {
+		return 0, err
+	}
+	accepted, final, err := a.gunshotResumeRequest(ctx, path, s, 0, 0, nil)
+	if err != nil {
+		return s.Offset, err
+	}
+	if len(final) != 0 || accepted < 0 || accepted > available {
+		return s.Offset, errors.New("invalid stream acknowledgement")
+	}
+	s.Offset = accepted
+	if err = gunshotSaveSession(path, s); err != nil {
+		return accepted, err
+	}
+	// Retain at least one byte for the sealed-file path to explicitly finalize.
+	// Even an exact multiple of the server granularity must never finalize here.
+	n := min(gunshotResumeChunk, available-accepted-1)
+	n = (n / s.Granularity) * s.Granularity
+	if n <= 0 {
+		return accepted, nil
+	}
+	ack, final, err := a.gunshotResumeRequest(ctx, path, s, accepted, n, io.NewSectionReader(f, accepted, n))
+	if err != nil {
+		return accepted, err
+	}
+	if len(final) != 0 || ack <= accepted || ack > accepted+n {
+		return accepted, errors.New("invalid stream chunk acknowledgement")
+	}
+	s.Offset = ack
+	if err = gunshotSaveSession(path, s); err != nil {
+		return ack, err
+	}
+	return ack, nil
+}

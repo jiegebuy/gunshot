@@ -66,6 +66,7 @@
   "Use Choose photos and videos to add items.": "使用「选择照片和视频」来添加任务",
   "Pending": "等待中",
   "Preparing": "准备中",
+  "Read %@; uploaded %@": "已读取 %@；已上传 %@",
   "Uploading": "上传中",
   "Committing": "确认中",
   "Completed": "已完成",

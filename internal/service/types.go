@@ -37,27 +37,33 @@ func (o Options) valid() bool {
 func validQuality(q string) bool { return q == "original" || q == "saver" || q == "quota" }
 
 type Job struct {
-	OriginalPolicy  int        `json:"originalPolicy,omitempty"` // 1: original bytes sent without legacy remote-hash shortcut.
-	ID              string     `json:"id"`
-	Account         string     `json:"account"`
-	Quality         string     `json:"quality"`
-	State           string     `json:"state"`
-	CommitStarted   int64      `json:"commitStarted,omitempty"`
-	ProgressUpdated int64      `json:"progressUpdated,omitempty"`
-	ContentSHA1     string     `json:"contentSHA1,omitempty"`
-	Resources       []Resource `json:"resources"`
-	Created         int64      `json:"created"`
-	Timestamp       int64      `json:"timestamp"`
-	Fingerprint     string     `json:"fingerprint,omitempty"`
-	SourceKey       string     `json:"sourceKey,omitempty"` // Hashed account/quality/source identity; raw PhotoKit ID is never persisted.
-	Attempts        int        `json:"attempts"`
-	Next            int64      `json:"next,omitempty"`
-	Uploaded        int64      `json:"uploaded"`
-	Total           int64      `json:"total"`
-	Error           string     `json:"error,omitempty"`
-	MediaKey        string     `json:"mediaKey,omitempty"`
-	CancelRequested bool       `json:"cancelRequested,omitempty"`
-	Owner           string     `json:"owner"`
+	StreamUploaded   int64      `json:"streamUploaded,omitempty"`
+	StreamBeforeSeal int64      `json:"streamBeforeSeal,omitempty"`
+	StreamFirstAck   int64      `json:"streamFirstAck,omitempty"`
+	ImportFinished   int64      `json:"importFinished,omitempty"`
+	StreamError      string     `json:"streamError,omitempty"`
+	Streaming        bool       `json:"streaming,omitempty"`      // A single growing PhotoKit resource, not yet sealed.
+	OriginalPolicy   int        `json:"originalPolicy,omitempty"` // 1: original bytes sent without legacy remote-hash shortcut.
+	ID               string     `json:"id"`
+	Account          string     `json:"account"`
+	Quality          string     `json:"quality"`
+	State            string     `json:"state"`
+	CommitStarted    int64      `json:"commitStarted,omitempty"`
+	ProgressUpdated  int64      `json:"progressUpdated,omitempty"`
+	ContentSHA1      string     `json:"contentSHA1,omitempty"`
+	Resources        []Resource `json:"resources"`
+	Created          int64      `json:"created"`
+	Timestamp        int64      `json:"timestamp"`
+	Fingerprint      string     `json:"fingerprint,omitempty"`
+	SourceKey        string     `json:"sourceKey,omitempty"` // Hashed account/quality/source identity; raw PhotoKit ID is never persisted.
+	Attempts         int        `json:"attempts"`
+	Next             int64      `json:"next,omitempty"`
+	Uploaded         int64      `json:"uploaded"`
+	Total            int64      `json:"total"`
+	Error            string     `json:"error,omitempty"`
+	MediaKey         string     `json:"mediaKey,omitempty"`
+	CancelRequested  bool       `json:"cancelRequested,omitempty"`
+	Owner            string     `json:"owner"`
 }
 type State struct {
 	CompletionRevision uint64  `json:"completionRevision,omitempty"`
@@ -80,6 +86,7 @@ type FingerprintReceipt struct {
 	Completed      int64  `json:"completed"`
 }
 type Request struct {
+	Streaming bool       `json:"streaming,omitempty"`
 	NativeID  string     `json:"nativeID,omitempty"`
 	SourceID  string     `json:"sourceID,omitempty"`
 	Op        string     `json:"op"`
@@ -106,6 +113,8 @@ type Runner func(context.Context, []string, string, string, func(Progress)) (str
 type Engine struct {
 	nativeRelay             *nativeRelay
 	importHashes            map[string][]hash.Hash
+	streamVerified          map[string]int64 // Bytes replayed/verified in this producer invocation.
+	preuploader             func(context.Context, string, string, string, int64) (int64, error)
 	mu                      sync.Mutex
 	root                    string
 	state                   State
@@ -207,6 +216,7 @@ func Open(root string, runner Runner) (*Engine, error) {
 		return nil, err
 	}
 	en := &Engine{root: root, state: s, jobsByID: make(map[string]*Job, len(s.Jobs)), sourceReceipts: receipts, receiptsByID: receiptsByID, fingerprintReceipts: fingerprintReceipts, fingerprintReceiptsByID: fingerprintReceiptsByID, active: map[string]context.CancelFunc{}, importHashes: map[string][]hash.Hash{}, runner: runner, wake: make(chan struct{}, 1)}
+	en.streamVerified = make(map[string]int64)
 	for _, j := range s.Jobs {
 		en.jobsByID[j.ID] = j
 		switch j.State {
@@ -217,6 +227,9 @@ func Open(root string, runner Runner) (*Engine, error) {
 			j.Error = "commit_outcome_unknown"
 		case "importing":
 			j.State = "cancelled"
+			if j.Streaming {
+				j.State = "failed"
+			}
 			j.Error = "import_interrupted"
 		case "failed":
 			// Upgrade older stalled workers into resumable retries without
@@ -266,6 +279,9 @@ func (e *Engine) save() error {
 // historyRemovable reports whether a finished row can leave the state file
 // without losing deduplication evidence. Caller holds e.mu.
 func (e *Engine) historyRemovable(j *Job) bool {
+	if e.active[j.ID] != nil {
+		return false
+	}
 	switch j.State {
 	case "cancelled":
 		return true
@@ -356,11 +372,14 @@ func validateState(s State) error {
 		if j.Owner != "photos" && j.Owner != "googlephotos" {
 			return errors.New("invalid job owner")
 		}
+		if j.Streaming && (len(j.Resources) != 1 || j.SourceKey == "" || (j.State != "importing" && j.State != "failed" && j.State != "cancelled")) {
+			return errors.New("invalid streaming job")
+		}
 		seen[j.ID] = true
 		names := map[string]bool{}
 		var total int64
 		for _, r := range j.Resources {
-			if !safeName(r.Name) || names[r.Name] || r.Size <= 0 || r.Size > 100<<30 {
+			if !safeName(r.Name) || names[r.Name] || r.Size < 0 || (r.Size == 0 && !j.Streaming) || r.Size > 100<<30 {
 				return errors.New("invalid persisted resource")
 			}
 			names[r.Name] = true

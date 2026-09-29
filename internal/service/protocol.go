@@ -46,10 +46,10 @@ func roleAllowed(role, op string) bool {
 		return true
 	}
 	if role == "settings" || role == "googlephotos" {
-		return common || (role == "googlephotos" && (op == "begin" || op == "append" || op == "seal" || op == "account_native" || op == "native_bearer" || op == "native_bearer_clear")) || op == "configure" || op == "account_add" || op == "account_remove" || op == "account_select"
+		return common || (role == "googlephotos" && (op == "begin" || op == "append" || op == "seal" || op == "stream_suspend" || op == "account_native" || op == "native_bearer" || op == "native_bearer_clear")) || op == "configure" || op == "account_add" || op == "account_remove" || op == "account_select"
 	}
 	if role == "photos" {
-		return common || op == "begin" || op == "append" || op == "seal"
+		return common || op == "begin" || op == "append" || op == "seal" || op == "stream_suspend"
 	}
 	return false
 }
@@ -101,7 +101,7 @@ func response(data any, err error) []byte {
 func (e *Engine) handle(r Request, role string) (any, error) {
 	switch r.Op {
 	case "ping":
-		return map[string]any{"version": 1}, nil
+		return map[string]any{"version": 1, "streamingImport": e.preuploader != nil}, nil
 	case "options":
 		return e.state.Options, nil
 	case "upload_summary":
@@ -155,7 +155,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 			return nil, err
 		}
 		if j != nil {
-			return map[string]any{"found": true, "id": j.ID, "state": j.State, "retryable": retryableFailure(j)}, nil
+			return map[string]any{"found": true, "id": j.ID, "state": j.State, "retryable": retryableFailure(j), "resumeImport": j.Streaming && j.State == "failed" && j.Error == "import_interrupted"}, nil
 		}
 		receipt, err := e.findSourceReceipt(r.Account, r.Quality, r.SourceID)
 		if err != nil {
@@ -215,7 +215,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		}
 		return nil, errRequest
 	}
-	if (r.Op == "append" || r.Op == "seal") && j.Owner != role {
+	if (r.Op == "append" || r.Op == "seal" || r.Op == "stream_suspend") && j.Owner != role {
 		return nil, errRequest
 	}
 	switch r.Op {
@@ -225,6 +225,8 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		return nil, e.appendChunk(j, r)
 	case "seal":
 		return e.seal(j)
+	case "stream_suspend":
+		return nil, e.suspendStream(j)
 	case "cancel":
 		if j.State == "completed" || j.State == "cancelled" {
 			return nil, errRequest
@@ -235,6 +237,7 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		} else {
 			j.State = "cancelled"
 			delete(e.importHashes, j.ID)
+			delete(e.streamVerified, j.ID)
 		}
 		err := e.save()
 		if err == nil && j.State == "cancelled" {

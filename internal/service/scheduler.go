@@ -13,6 +13,9 @@ func (e *Engine) nextPendingUpload(now int64) *Job {
 		if j.State != "pending" || j.Next > now || e.nativeAuthorization(j.Account) == "waiting" {
 			continue
 		}
+		if _, running := e.active[j.ID]; running {
+			continue
+		}
 		if oldest == nil || j.Created < oldest.Created {
 			oldest = j
 		}

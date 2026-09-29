@@ -68,7 +68,16 @@ func (e *Engine) uploadSummary() map[string]any {
 		modes[mode.name] = map[string]any{"model": mode.model, "storagePolicy": mode.policy, "uploadQuality": 1, "states": states}
 	}
 	media := map[string]*mediaSummary{}
+	streaming := map[string]int64{"activeImports": 0, "acknowledgedBytes": 0, "bytesAcknowledgedBeforeSeal": 0, "jobsWithOverlap": 0}
 	for _, job := range e.state.Jobs {
+		if job.Streaming && job.State == "importing" {
+			streaming["activeImports"]++
+		}
+		streaming["acknowledgedBytes"] += job.StreamUploaded
+		streaming["bytesAcknowledgedBeforeSeal"] += job.StreamBeforeSeal
+		if job.StreamBeforeSeal > 0 {
+			streaming["jobsWithOverlap"]++
+		}
 		if states := counts[job.Quality]; states != nil {
 			states[job.State]++
 		}
@@ -84,5 +93,5 @@ func (e *Engine) uploadSummary() map[string]any {
 		}
 	}
 	conditions := map[string]bool{"online": e.online, "wifi": e.wifi, "charging": e.charging, "paused": e.state.Options.Paused}
-	return map[string]any{"completionRevision": e.state.CompletionRevision, "defaultQuality": e.state.Options.Quality, "profiles": modes, "mediaTypes": media, "conditions": conditions, "serverQualityVerified": false, "transport": backend.GunshotTransportSnapshot(), "configuredConcurrent": e.state.Options.Concurrent, "activeWorkers": len(e.active), "engine": e.lockSnapshot()}
+	return map[string]any{"streaming": streaming, "completionRevision": e.state.CompletionRevision, "defaultQuality": e.state.Options.Quality, "profiles": modes, "mediaTypes": media, "conditions": conditions, "serverQualityVerified": false, "transport": backend.GunshotTransportSnapshot(), "configuredConcurrent": e.state.Options.Concurrent, "activeWorkers": len(e.active), "engine": e.lockSnapshot()}
 }

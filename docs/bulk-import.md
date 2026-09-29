@@ -12,7 +12,36 @@ An inaccessible identifier or an individual original-export failure is counted s
 
 Completed exports use separate serial copy lanes for files totaling at most 32 MiB and for larger originals. A 128 MiB small-file allowance keeps photos entering the upload queue while an oversized video occupies its normal budget; the 128-job limit and physical free-space reserve still apply. Capacity uses actual filesystem free bytes, not purgeable estimates. Each export chunk atomically reserves its immediate write and future queue copy across all workers. Admission transfers the completed export's reservation to the copy lane without double-counting; failures release unused reservations after cleanup. A copy lane defers work that would wait on exported files behind it. While PhotoKit caches a resource before delivering data, a periodic free-space check can cancel its download before it consumes the system reserve or other copies' reservations. Background progress includes metadata scanned, PhotoKit/cloud progress and bytes actually copied into the queue.
 
-## What the reports establish
+## Streaming Originals
+
+Single-resource PhotoKit imports now append directly to the queue file. A bounded
+share of upload slots sends its durable prefix through an unknown-length Scotty
+session while PhotoKit is still delivering data. The final byte and full SHA-1
+are sent only after the producer seals the complete original. Existing duplicate
+checks and the normal final commit still apply. Live Photos and file-provider
+imports retain their existing complete-resource path.
+
+This removes the extra export-to-queue copy for those single resources, but keeps
+one local file until remote completion. PhotoKit may cache the entire iCloud
+resource before its first data callback. In that case Google transmission overlaps
+local resource reading, not the earlier iCloud network download. A PhotoKit
+progress callback is not itself permission to read an incomplete system cache.
+
+Interruptions retain the partial file and private server checkpoint. Selecting
+the same source again replays PhotoKit from zero, compares the retained bytes,
+and resumes sending at the server-confirmed offset. A changed prefix is rejected.
+This is upload resumption, not app-controlled byte-range resumption of iCloud.
+Low-space deferral discards the blocking partial so other originals can proceed.
+
+The queue displays bytes read and bytes acknowledged separately during import.
+`uploadSummary.streaming.bytesAcknowledgedBeforeSeal` and `jobsWithOverlap`
+measure server acknowledgements observed before the resource was sealed, over
+the retained job history. `batchImport.streamFirstDataCloudUnits` records PhotoKit
+progress (0..1000) at first data delivery for the latest streaming resource; a
+value of 1000 cannot establish concurrent iCloud network downloading. Full-library
+upload totals remain in `completionRevision`.
+
+## Report Interpretation
 
 [Issue #21](https://github.com/tqmane/gunshot/issues/21) reports that selecting about 2,000 photos fails while five work. The attached screenshot shows **Unable to Load Items** in the system picker. Two 7.20.2 diagnostics show 114 completed and one failed job, with no new import history. This is consistent with a picker failure before its completion callback, not evidence of 2,000 failed HTTP uploads. Cancel that picker and use the album path.
 

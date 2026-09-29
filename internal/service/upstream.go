@@ -28,6 +28,7 @@ func Initialize(root string) (*Engine, error) {
 		return nil, err
 	}
 	e.reconciler = backend.GunshotFindUploadedHash
+	e.preuploader = backend.GunshotPreupload
 	if err = backend.LoadConfig(filepath.Join(root, "credentials.json")); err != nil {
 		return nil, err
 	}
