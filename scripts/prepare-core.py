@@ -72,6 +72,8 @@ shutil.copy2(r / 'tests/quality_wire_test.go.txt', d / 'backend/gunshot_quality_
 shutil.copy2(r / 'tests/context_transport_test.go.txt', d / 'backend/gunshot_context_transport_test.go')
 
 shutil.copy2(r / 'GotohpCore/resumable_upload.go.txt', d / 'backend/gunshot_resumable_upload.go')
+shutil.copy2(r / 'GotohpCore/streaming_probe.go.txt', d / 'backend/gunshot_streaming_probe.go')
+shutil.copy2(r / 'tests/streaming_probe_test.go.txt', d / 'backend/gunshot_streaming_probe_test.go')
 shutil.copy2(r / 'tests/resumable_upload_test.go.txt', d / 'backend/gunshot_resumable_upload_test.go')
 p = d / 'backend/api.go'
 s = p.read_text()

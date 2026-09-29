@@ -66,6 +66,7 @@ func GunshotInitialize(path *C.char) C.int {
 		e.EnableNativeRelay()
 	}
 	go e.Run(context.Background())
+	go streamingProbeIfRequested(C.GoString(path))
 	return 0
 }
 

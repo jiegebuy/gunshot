@@ -1,0 +1,100 @@
+package backend
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+type streamProbeServer struct {
+	t                       *testing.T
+	starts, chunks, cancels int
+	badQuery, unsafeURL     bool
+	commands                []string
+}
+
+func (s *streamProbeServer) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.t.Helper()
+	command := r.Header.Get("X-Goog-Upload-Command")
+	s.commands = append(s.commands, command)
+	if r.URL.Host != "photos.googleapis.com" || !strings.HasPrefix(r.URL.Path, "/data/upload/") {
+		s.t.Fatal("unexpected endpoint")
+	}
+	h := http.Header{}
+	raw := ""
+	status := 200
+	switch command {
+	case "start":
+		s.starts++
+		if (s.starts == 1) != (r.Header.Get("X-Goog-Hash") != "") {
+			s.t.Fatal("wrong hash capability probe")
+		}
+		if (s.starts != 3) != (r.Header.Get("X-Goog-Upload-Header-Content-Length") != "") {
+			s.t.Fatal("wrong size capability probe")
+		}
+		u := gunshotUploadEndpoint + "?upload_id=secret-capability"
+		if s.unsafeURL {
+			u = "https://example.com/secret"
+		}
+		h.Set("X-Goog-Upload-URL", u)
+		h.Set("X-Goog-Upload-Chunk-Granularity", "262144")
+	case "upload":
+		s.chunks++
+		n, e := io.Copy(io.Discard, r.Body)
+		if e != nil || n != 262144 || r.Header.Get("X-Goog-Upload-Offset") != "0" {
+			s.t.Fatal("wrong initial chunk")
+		}
+		h.Set("X-Goog-Upload-Size-Received", "262144")
+	case "query":
+		h.Set("X-Goog-Upload-Status", "active")
+		n := 262144
+		if s.badQuery {
+			n--
+		}
+		h.Set("X-Goog-Upload-Size-Received", strconv.Itoa(n))
+	case "upload, finalize":
+		if r.Header.Get("X-Goog-Upload-Offset") != "262144" || r.Header.Get("X-Goog-Hash") == "" {
+			s.t.Fatal("missing final integrity metadata")
+		}
+		raw = string([]byte{8, 2, 18, 3, 1, 2, 3})
+	case "cancel":
+		s.cancels++
+	default:
+		s.t.Fatalf("probe attempted non-upload command %q", command)
+	}
+	return &http.Response{StatusCode: status, Header: h, Body: io.NopCloser(strings.NewReader(raw)), Request: r}, nil
+}
+func TestStreamingProbeIsSyntheticAndNeverCommits(t *testing.T) {
+	defer GunshotSetNativeBearerProvider(nil)
+	GunshotSetNativeBearerProvider(func(string) (string, error) { return "private-native-token", nil })
+	for _, invalid := range []string{"", "query", "url"} {
+		s := &streamProbeServer{t: t, badQuery: invalid == "query", unsafeURL: invalid == "url"}
+		a, err := newAPIFromCredential("Email=test%40example.com&gunshot_native_id=account-123", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.client = &http.Client{Transport: s}
+		results := a.gunshotProbeStreaming(context.Background())
+		for _, r := range results {
+			if r.Finalized != (invalid == "") {
+				t.Fatal("incorrect capability evidence", r)
+			}
+		}
+		if invalid == "query" && s.cancels != 3 {
+			t.Fatal("unconfirmed sessions not cancelled")
+		}
+		if invalid == "url" && s.chunks != 0 {
+			t.Fatal("followed untrusted session URL")
+		}
+		data, _ := json.Marshal(results)
+		for _, secret := range []string{"secret-capability", "private-native-token", "test@example.com", "https://"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatal("probe exported private data")
+			}
+		}
+	}
+}

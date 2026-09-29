@@ -1,0 +1,174 @@
+package backend
+
+import (
+	"app/generated"
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"time"
+
+	"google.golang.org/protobuf/proto"
+)
+
+// This opt-in diagnostic never calls CommitUpload/CreateMediaItems. Its bytes
+// are synthetic, not a library asset. Session capabilities and responses must
+// stay in memory; only the status/offset evidence below leaves this function.
+type GunshotStreamingProbeResult struct {
+	Mode         string `json:"mode"`
+	StartHTTP    int    `json:"startHTTP,omitempty"`
+	ChunkHTTP    int    `json:"chunkHTTP,omitempty"`
+	QueryHTTP    int    `json:"queryHTTP,omitempty"`
+	FinalizeHTTP int    `json:"finalizeHTTP,omitempty"`
+	CancelHTTP   int    `json:"cancelHTTP,omitempty"`
+	Acknowledged int64  `json:"acknowledged,omitempty"`
+	Queried      int64  `json:"queried,omitempty"`
+	Granularity  int64  `json:"granularity,omitempty"`
+	Finalized    bool   `json:"finalized"`
+	Error        string `json:"error,omitempty"`
+}
+
+func GunshotProbeStreaming(ctx context.Context, account string) ([]GunshotStreamingProbeResult, error) {
+	a, err := NewApi(ApiOptions{Account: account})
+	if err != nil {
+		return nil, errors.New("probe account unavailable")
+	}
+	return a.gunshotProbeStreaming(ctx), nil
+}
+
+func (a *Api) gunshotProbeStreaming(ctx context.Context) []GunshotStreamingProbeResult {
+	results := make([]GunshotStreamingProbeResult, 0, 3)
+	for _, mode := range []string{"known_hash_and_size", "unknown_hash", "unknown_hash_and_size"} {
+		results = append(results, a.gunshotProbeStreamMode(ctx, mode))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return results
+}
+
+func (a *Api) gunshotProbeStreamMode(ctx context.Context, mode string) (result GunshotStreamingProbeResult) {
+	result.Mode = mode
+	// A small bounded payload; never finalized into the user's photo library.
+	payload := bytes.Repeat([]byte{0x47, 0x53, 0x50, 0x52}, (512<<10)/4)
+	payload = append(payload, []byte("stream-probe-end")...)
+	digest := sha1.Sum(payload)
+	hash := base64.StdEncoding.EncodeToString(digest[:])
+	knownSize := mode != "unknown_hash_and_size"
+	size := int64(0)
+	if knownSize {
+		size = int64(len(payload))
+	}
+	body, _ := proto.Marshal(&generated.GetUploadToken{F1: 2, F2: 2, F3: 1, F4: 3, FileSizeBytes: size})
+	session := ""
+	client := *a.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	send := func(command string, offset int64, data []byte) (int, http.Header, []byte, error) {
+		target := session
+		if command == "start" {
+			target = gunshotUploadEndpoint
+		}
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(c, "POST", target, bytes.NewReader(data))
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		token, err := a.BearerToken()
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", a.userAgent)
+		req.Header.Set("X-Goog-Upload-Command", command)
+		if command == "start" {
+			req.Header.Set("Accept-Language", a.language)
+			req.Header.Set("Content-Type", "application/x-protobuf")
+			req.Header.Set("X-Goog-Upload-Protocol", "resumable")
+			req.Header.Set("X-Goog-Upload-Header-Content-Type", "application/octet-stream")
+			if knownSize {
+				req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+				req.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.FormatInt(size, 10))
+			}
+			if mode == "known_hash_and_size" {
+				req.Header.Set("X-Goog-Hash", "sha1="+hash)
+			}
+		} else {
+			req.Header.Set("Content-Type", "application/octet-stream")
+			if command == "upload" || command == "upload, finalize" {
+				req.Header.Set("X-Goog-Upload-Offset", strconv.FormatInt(offset, 10))
+			}
+			if command == "upload, finalize" {
+				req.Header.Set("X-Goog-Hash", "sha1="+hash)
+			}
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return resp.StatusCode, resp.Header, raw, err
+	}
+	defer func() {
+		if session != "" && !result.Finalized {
+			// Use an independent short deadline even after a cancelled probe.
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			ctx = cleanup
+			result.CancelHTTP, _, _, _ = send("cancel", 0, nil)
+		}
+	}()
+	status, headers, _, err := send("start", 0, body)
+	result.StartHTTP = status
+	if err != nil {
+		result.Error = "start_interrupted"
+		return
+	}
+	if status < 200 || status >= 300 {
+		result.Error = "start_rejected"
+		return
+	}
+	session = headers.Get("X-Goog-Upload-URL")
+	if !gunshotSafeUploadURL(session) {
+		session = ""
+		result.Error = "no_scotty_session"
+		return
+	}
+	g, err := strconv.ParseInt(headers.Get("X-Goog-Upload-Chunk-Granularity"), 10, 64)
+	if err != nil || g <= 0 || g > 512<<10 {
+		result.Error = "unsupported_granularity"
+		return
+	}
+	result.Granularity = g
+	status, headers, _, err = send("upload", 0, payload[:g])
+	result.ChunkHTTP = status
+	result.Acknowledged, _ = strconv.ParseInt(headers.Get("X-Goog-Upload-Size-Received"), 10, 64)
+	if err != nil || status < 200 || status >= 300 {
+		result.Error = "chunk_rejected"
+		return
+	}
+	status, headers, _, err = send("query", 0, nil)
+	result.QueryHTTP = status
+	result.Queried, _ = strconv.ParseInt(headers.Get("X-Goog-Upload-Size-Received"), 10, 64)
+	if err != nil || status < 200 || status >= 300 || result.Queried != g || headers.Get("X-Goog-Upload-Status") != "active" {
+		result.Error = "offset_unconfirmed"
+		return
+	}
+	status, _, raw, err := send("upload, finalize", g, payload[g:])
+	result.FinalizeHTTP = status
+	if err != nil || status < 200 || status >= 300 {
+		result.Error = "finalize_rejected"
+		return
+	}
+	if _, err = ParseScottyFinalizeToken(raw); err != nil {
+		result.Error = "finalize_unconfirmed"
+		return
+	}
+	result.Finalized = true
+	return
+}
