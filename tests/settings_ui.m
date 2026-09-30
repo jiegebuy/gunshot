@@ -106,6 +106,7 @@ BOOL GSUploadDiagnosticsEnabled(void){return NO;}
 void GSSetUploadDiagnostics(BOOL enabled){}
 NSDictionary *GSUploadDiagnosticsSnapshot(void){return @{};}
 NSArray<NSURL *> *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error){return nil;}
+BOOL GSPhotoAssetSupportsBoundedRanges(PHAsset *asset){return NO;}
 NSString *GSImportFiles(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,NSError **error){return nil;}
 NSString *GSImportFilesWithProgress(NSArray<NSURL *> *files,NSString *account,NSString *quality,NSDate *date,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error){return nil;}
 NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,NSString *quality,GSImportAuthorizationCheck authorization,NSError **error){return nil;}
