@@ -45,6 +45,10 @@ type Job struct {
 	StreamUploaded         int64      `json:"streamUploaded,omitempty"`
 	StreamBeforeSeal       int64      `json:"streamBeforeSeal,omitempty"`
 	StreamFirstAck         int64      `json:"streamFirstAck,omitempty"`
+	StreamAppendCalls      int64      `json:"streamAppendCalls,omitempty"`
+	StreamAppendBytes      int64      `json:"streamAppendBytes,omitempty"`
+	StreamAppendWaitNanos  int64      `json:"streamAppendWaitNanos,omitempty"`
+	StreamAppendWorkNanos  int64      `json:"streamAppendWorkNanos,omitempty"`
 	ImportFinished         int64      `json:"importFinished,omitempty"`
 	StreamError            string     `json:"streamError,omitempty"`
 	Streaming              bool       `json:"streaming,omitempty"`      // A single growing PhotoKit resource, not yet sealed.

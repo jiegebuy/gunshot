@@ -4,6 +4,7 @@
 
 #define GS_SERVICE "dev.tqmane.gunshot.service"
 #define GS_MAX_JSON 60000
+#define GS_MAX_EMBEDDED_CHUNK (8 * 1024 * 1024)
 #define GS_MESSAGE_ID 0x47534831
 #define GS_STATE_PATH "/var/mobile/Library/Application Support/GoToHP"
 // No complex descriptors, pointers, paths, or client-supplied identities on the wire.

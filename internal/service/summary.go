@@ -75,6 +75,10 @@ func (e *Engine) uploadSummary() map[string]any {
 		}
 		streaming["acknowledgedBytes"] += job.StreamUploaded
 		streaming["reclaimedBytes"] += job.StreamReclaimed
+		streaming["appendCalls"] += job.StreamAppendCalls
+		streaming["appendBytes"] += job.StreamAppendBytes
+		streaming["appendWaitNanos"] += job.StreamAppendWaitNanos
+		streaming["appendWorkNanos"] += job.StreamAppendWorkNanos
 		streaming["bytesAcknowledgedBeforeSeal"] += job.StreamBeforeSeal
 		if job.StreamBeforeSeal > 0 {
 			streaming["jobsWithOverlap"]++

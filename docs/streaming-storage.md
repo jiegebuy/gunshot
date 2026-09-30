@@ -22,6 +22,13 @@ files. Larger reader windows reduce PhotoKit setup overhead while preserving
 per-window ownership and reclamation; their physical cache is additional to
 the queue window below. See [throughput measurements](analysis/upload-throughput-v43.md).
 
+V44 passes up to 8 MiB per synchronous in-process append, subject to the
+remaining producer window. PhotoKit callbacks are no longer unconditionally
+split at 1 MiB. The queue still fsyncs bytes and the source checkpoint before
+returning; this amortizes durable writes without acknowledging volatile data.
+The JSON/Mach transport retains its smaller limit. Streaming diagnostics
+include append calls/bytes, engine-lock wait time, and append processing time.
+
 Swift TaskLocal ownership propagates from our request into CloudAssets tasks.
 Only tasks carrying an active owned lease redirect item-replacement directories
 into `Library/Caches/GoToHP-PhotoSource`. Other callers retain FileManager's

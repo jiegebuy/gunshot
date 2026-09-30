@@ -17,6 +17,8 @@ static BOOL SlashHeavy;
 static BOOL StreamingEnabled,StreamAppendBeforeCompletion;
 static NSUInteger Suspended;
 static NSUInteger StreamWindowWaits,StreamWindowRequests;
+static NSUInteger LargeStreamBytes,CloudCallbackBytes=1048576,StreamWindowBytes=12345;
+static NSUInteger LargeAppendCalls,PeakLargeAppend;
 static NSUInteger Cancelled;
 static __weak NSError *LastAppendError;
 static atomic_int ActiveExports,PeakExports;
@@ -39,7 +41,7 @@ static const NSUInteger FixtureSize=2097165;
 static const NSUInteger FixtureSize=70013;
 #endif
 static NSData *OriginalBytes(BOOL movie){
- NSMutableData *bytes=[NSMutableData dataWithLength:FixtureSize];uint8_t *p=bytes.mutableBytes;
+ NSMutableData *bytes=[NSMutableData dataWithLength:LargeStreamBytes?:FixtureSize];uint8_t *p=bytes.mutableBytes;
  for(NSUInteger i=0;i<bytes.length;i++)p[i]=(uint8_t)(i*17+(movie?3:7));
  if(SlashHeavy)memset(p,0xff,bytes.length);
  memcpy(p,"\0\0\0\x18" "ftyp",8);memcpy(p+8,movie?"qt  ":"heic",4);return bytes;
@@ -109,8 +111,8 @@ static void BeforeAppend(NSDictionary *job,NSUInteger index,unsigned long long o
   [NSThread sleepForTimeInterval:0.01]; // Model an asynchronous PhotoKit/iCloud wait.
   if(options.progressHandler)options.progressHandler(1.0);
   NSError *failure=unreadable?[NSError errorWithDomain:@"private-resource-error" code:99 userInfo:nil]:nil;
-  if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=1048576){
-   handler([bytes subdataWithRange:NSMakeRange(offset,MIN(1048576,bytes.length-offset))]);
+  if(!failure)for(NSUInteger offset=0;offset<bytes.length&&!atomic_load(&CloudCancel);offset+=CloudCallbackBytes){
+   handler([bytes subdataWithRange:NSMakeRange(offset,MIN(CloudCallbackBytes,bytes.length-offset))]);
   }
   if(atomic_load(&CloudCancel))failure=[NSError errorWithDomain:@"PhotoKitCancelled" code:1 userInfo:nil];
   atomic_fetch_sub(&ActiveExports,1);completion(failure);
@@ -133,7 +135,8 @@ BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread)
 #if GS_JAILED
 BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error){
  if(StreamingEnabled&&atomic_load(&ActiveExports)>0)StreamAppendBeforeCompletion=YES;
- assert(!NSThread.isMainThread&&data.length>0&&data.length<=1048576);
+ assert(!NSThread.isMainThread&&data.length>0&&data.length<=GS_MAX_EMBEDDED_CHUNK);
+ if(LargeStreamBytes){LargeAppendCalls++;PeakLargeAppend=MAX(PeakLargeAppend,data.length);}
  NSDictionary *job=CopyJob(identifier);BeforeAppend(job,index,offset);
  if(RejectAppend&&offset>=32768){
   NSError *failure=[NSError errorWithDomain:@"Gunshot.IPC" code:73 userInfo:@{NSLocalizedDescriptionKey:@"Synthetic late binary chunk rejection"}];
@@ -166,7 +169,7 @@ NSDictionary *GSRequest(NSDictionary *request,NSError **error){
   @synchronized(CopyJobs){CopyJobs[identifier]=@{@"resources":resources,@"received":received};Received=received;}
   return @{@"id":identifier,@"streamBounded":request[@"streamBounded"]?:@NO};
  }
- if([op isEqual:@"stream_window"]){StreamWindowRequests++;BOOL waiting=StreamWindowWaits>0;if(waiting)StreamWindowWaits--;return @{@"availableBytes":@(waiting?0:12345),@"paused":@NO};}
+ if([op isEqual:@"stream_window"]){StreamWindowRequests++;BOOL waiting=StreamWindowWaits>0;if(waiting)StreamWindowWaits--;return @{@"availableBytes":@(waiting?0:StreamWindowBytes),@"paused":@NO};}
  if([op isEqual:@"append"]){
   if(StreamingEnabled&&atomic_load(&ActiveExports)>0)StreamAppendBeforeCompletion=YES;
   NSDictionary *job=CopyJob(request[@"id"]);BeforeAppend(job,[request[@"index"]unsignedIntegerValue],[request[@"offset"]unsignedLongLongValue]);
@@ -513,6 +516,14 @@ int main(void){@autoreleasepool{
   StreamWindowWaits=3;StreamWindowRequests=0;
   assert(GSImportPhotoIdentifier(@"streaming-original",@"fixture@example.com",@"original",&error));
   assert(!error&&StreamAppendBeforeCompletion&&StreamWindowRequests>3&&StreamWindowWaits==0);
+#if GS_JAILED
+  LargeStreamBytes=(9ULL<<20)+13;CloudCallbackBytes=LargeStreamBytes;StreamWindowBytes=GS_MAX_EMBEDDED_CHUNK;
+  LargeAppendCalls=PeakLargeAppend=0;
+  assert(GSImportPhotoIdentifier(@"streaming-large-callback",@"fixture@example.com",@"original",&error));
+  assert(!error&&LargeAppendCalls==2&&PeakLargeAppend==GS_MAX_EMBEDDED_CHUNK);
+  assert([Received[0]isEqual:OriginalBytes(NO)]);
+  LargeStreamBytes=0;CloudCallbackBytes=1048576;StreamWindowBytes=12345;
+#endif
   RejectAppend=YES;
   assert(!GSImportPhotoIdentifier(@"streaming-interrupted",@"fixture@example.com",@"original",&error));
   assert(error==LastAppendError&&Suspended==1);

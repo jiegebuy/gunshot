@@ -252,7 +252,7 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
    @try {
    for(NSUInteger start=0;start<data.length;){@autoreleasepool{
 #if GS_JAILED
-    NSUInteger length=MIN((NSUInteger)1048576,data.length-start);
+    NSUInteger length=MIN((NSUInteger)GS_MAX_EMBEDDED_CHUNK,data.length-start);
 #else
     NSUInteger length=MIN((NSUInteger)16384,data.length-start);
 #endif

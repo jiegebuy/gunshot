@@ -98,7 +98,7 @@ static void GSStart(void) {
 }
 BOOL GSEmbeddedAppend(NSString *identifier,NSUInteger index,unsigned long long offset,NSData *data,NSError **error) {
  GSStart();__block BOOL accepted=NO;
- if(identifier.length&&index<2&&offset<=LLONG_MAX&&data.length>0&&data.length<=1048576){
+ if(identifier.length&&index<2&&offset<=LLONG_MAX&&data.length>0&&data.length<=GS_MAX_EMBEDDED_CHUNK){
   dispatch_sync(GSCoreQueue,^{
    if(GSReady)accepted=GunshotAppend((char *)identifier.UTF8String,(int)index,(long long)offset,(void *)data.bytes,(int)data.length)==1;
   });

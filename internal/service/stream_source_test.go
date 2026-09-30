@@ -62,6 +62,40 @@ func TestRangeSourceResumesReleasedPrefixWithoutReplay(t *testing.T) {
 		t.Fatal("resumed original changed", err)
 	}
 }
+
+func TestRangeSourceLargeAppendIsDurableBeforeReturn(t *testing.T) {
+	e := newEngine(t, nil)
+	data := bytes.Repeat([]byte("original"), (8<<20)/8+17)
+	r := rangeRequest(int64(len(data)))
+	j, _ := startRange(t, e, r)
+	appendStreamTest(t, e, j, 0, data[:8<<20])
+	path := filepath.Join(e.jobDir(j.ID), j.Resources[0].Name)
+	spoolReceipt(t, path, 4<<20)
+	if _, err := backend.GunshotReclaimStream(path, 4<<20); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen without suspension/save: append's durable source checkpoint must
+	// be enough to recover, including a released prefix inside the large block.
+	e.Close()
+	next, err := Open(e.root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	j, reply := startRange(t, next, r)
+	if reply["resumeOffset"] != int64(8<<20) {
+		t.Fatal("large append was not durably checkpointed", reply)
+	}
+	appendStreamTest(t, next, j, 8<<20, data[8<<20:])
+	if _, err := next.seal(j); err != nil {
+		t.Fatal(err)
+	}
+	got, err := backend.CalculateSHA1(context.Background(), path)
+	want := sha1.Sum(data)
+	if err != nil || !bytes.Equal(got, want[:]) {
+		t.Fatal("large-block resume changed original", err)
+	}
+}
 func TestRangeSourceRejectsChangedIdentityAndCorruptTail(t *testing.T) {
 	for _, kind := range []string{"version", "size", "tail", "checkpoint", "missing-session", "missing-spool", "rewound-session"} {
 		t.Run(kind, func(t *testing.T) {
