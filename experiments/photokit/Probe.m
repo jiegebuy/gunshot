@@ -100,8 +100,9 @@ static BOOL SetPrivateBool(id object, NSString *name, BOOL value) {
     return YES;
 }
 static PHAssetResource *Original(PHAsset *asset) {
+    PHAssetResourceType type = asset.mediaType == PHAssetMediaTypeImage ? PHAssetResourceTypePhoto : PHAssetResourceTypeVideo;
     for (PHAssetResource *resource in [PHAssetResource assetResourcesForAsset:asset])
-        if (resource.type == PHAssetResourceTypeVideo) return resource;
+        if (resource.type == type) return resource;
     return nil;
 }
 static NSDictionary *Describe(PHAsset *asset, PHAssetResource *resource) {
@@ -632,11 +633,16 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
     if ([mode isEqual:@"inventory"]) {
         PHFetchOptions *options = [PHFetchOptions new]; options.fetchLimit = 1000;
         options.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO]];
+        PHAssetMediaType type = [command[@"mediaType"] integerValue] == PHAssetMediaTypeImage ? PHAssetMediaTypeImage : PHAssetMediaTypeVideo;
+        NSArray *filenames = [command[@"filenames"] isKindOfClass:NSArray.class] ? command[@"filenames"] : nil;
+        PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithMediaType:type options:options];
         NSMutableArray *items = [NSMutableArray array];
-        for (PHAsset *asset in [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeVideo options:options]) {
-            PHAssetResource *resource = Original(asset); if (resource) [items addObject:Describe(asset, resource)];
+        for (PHAsset *asset in assets) {
+            PHAssetResource *resource = Original(asset);
+            if (resource && (!filenames || [filenames containsObject:resource.originalFilename])) [items addObject:Describe(asset, resource)];
         }
-        SaveJSON(@"inventory.json", @{@"id": command[@"id"], @"items": items, @"freeBytes": @(FreeBytes())}); return;
+        SaveJSON(@"inventory.json", @{@"id": command[@"id"], @"items": items, @"scannedAssets": @(assets.count),
+                                    @"atFetchLimit": @(assets.count == options.fetchLimit), @"freeBytes": @(FreeBytes())}); return;
     }
     ProbeRun *run = [[ProbeRun alloc] initWithCommand:command];
     dispatch_sync(dispatch_get_main_queue(), ^{ self.run = run; });
