@@ -108,13 +108,13 @@ static NSDictionary *Run(NSArray *ids){
  if(LastDirectory)assert(![NSFileManager.defaultManager fileExistsAtPath:LastDirectory]);
  return done;
 }
-static void TestBoundedVideoWorkers(NSUInteger concurrent,BOOL mixed){
+static void TestBoundedVideoWorkers(NSUInteger concurrent,NSUInteger expected,BOOL mixed){
  Concurrent=concurrent;StartedVideos=ActiveVideos=PeakVideos=ActiveLegacy=PeakLegacy=0;
  NSMutableArray *ids=[NSMutableArray array];
  for(NSUInteger i=0;i<6;i++)[ids addObject:[NSString stringWithFormat:@"video-range-%lu",(unsigned long)i]];
  if(mixed)[ids addObjectsFromArray:@[@"video-legacy-1",@"video-legacy-2"]];
  [ids addObjectsFromArray:@[@"photo-a",@"photo-b",@"photo-c"]];
- NSUInteger expected=concurrent>=4?2:1,before=Queued;
+ NSUInteger before=Queued;
  VideoRelease=dispatch_semaphore_create(0);__block NSDictionary *result=nil;
  assert(GSStartBatchImport(ids.count,@"album",YES,GSPhotoIdentifierProvider(ids),@"a@example.com",@"identity-A",nil,^(NSDictionary *state){result=state;}));
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];BOOL ready=NO;
@@ -180,10 +180,13 @@ int main(void){@autoreleasepool{
  assert(StartedVideos==20&&PeakVideos==1&&ActiveVideos==0);
  VideoRelease=nil;
  NSLog(@"PASS later photos prepare with one blocked video and video preparation stays serial after photos finish");
- TestBoundedVideoWorkers(8,NO);
- TestBoundedVideoWorkers(8,YES);
- TestBoundedVideoWorkers(1,NO);
- NSLog(@"PASS two bounded cloud video workers, one full-resource reader, independent photos and single-slot settings");
+ TestBoundedVideoWorkers(8,4,NO);
+ TestBoundedVideoWorkers(8,4,YES);
+ TestBoundedVideoWorkers(16,4,NO);
+ TestBoundedVideoWorkers(4,2,NO);
+ TestBoundedVideoWorkers(2,1,NO);
+ TestBoundedVideoWorkers(1,1,NO);
+ NSLog(@"PASS up to four bounded cloud video workers, one full-resource reader, independent photos and low-concurrency settings");
  NSLog(@"PASS oversized original is deferred while later photos continue and remains retryable");
  NSLog(@"PASS 2000 identifier-only selections, missing IDs, individual export failure, account switch, cancellation, queue/IPC failure, retry and private batch diagnostics");
 }}

@@ -168,7 +168,7 @@ func (e *Engine) tickStreams(now int64) {
 	if e.preuploader == nil {
 		return
 	}
-	limit, active := max(1, min(2, e.state.Options.Concurrent/2)), 0
+	limit, active := max(1, min(4, e.state.Options.Concurrent/2)), 0
 	for id := range e.active {
 		if j := e.find(id); j != nil && j.Streaming {
 			active++

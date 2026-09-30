@@ -4,18 +4,23 @@ Single-resource PhotoKit imports can negotiate an unknown-length Scotty upload
 before the resource reader reaches EOF. Live Photos and file-provider imports
 continue to use their complete-resource paths.
 
-The v41 source uses private CloudAsset original-byte ranges for cloud-only
+The range source uses private CloudAsset original-byte ranges for cloud-only
 videos on iOS 27, up to 8 GiB. A 1 MiB probe establishes the resource's opaque
-signature before queue admission. Requests use 1 MiB chunks and reader windows
-of at most 20 MiB, with at most two range sources per host process. Local
+signature before queue admission. V43 requests use up to 20 MiB chunks and reader
+windows of at most 60 MiB, with at most four range sources per host process. Local
 resources, photographs, and earlier systems retain the existing reader.
 An incompatible cloud loader fails explicitly instead of silently starting a
 full-original download. This remains an unsupported private API integration.
 
-V42 album preparation permits two video workers at upload concurrency 4 or
-above. Metadata-eligible bounded cloud sources can use both; full-resource
+V43 album preparation reserves half the upload concurrency for videos, with a
+minimum of one and a maximum of four workers (two at concurrency 4, four at 8).
+Metadata-eligible bounded cloud sources can use these workers; full-resource
 PhotoKit videos remain serialized. Photo preparation keeps independent workers,
-and the process-wide two-source cap still covers non-album entry points.
+and the process-wide four-source cap still covers non-album entry points.
+The streaming upload scheduler uses the same limits and leaves room for ready
+files. Larger reader windows reduce PhotoKit setup overhead while preserving
+per-window ownership and reclamation; their physical cache is additional to
+the queue window below. See [throughput measurements](analysis/upload-throughput-v43.md).
 
 Swift TaskLocal ownership propagates from our request into CloudAssets tasks.
 Only tasks carrying an active owned lease redirect item-replacement directories

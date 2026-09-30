@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -189,6 +190,44 @@ func TestStreamingPacesOnlyIdleAndFailedChunks(t *testing.T) {
 			}
 			if mode == "failure" && (j.Next < before+15 || j.StreamError != "preupload_retry") {
 				t.Fatal("failure lost retry backoff")
+			}
+		})
+	}
+}
+
+func TestStreamConcurrencyLeavesRoomForReadyFiles(t *testing.T) {
+	for _, test := range []struct{ concurrent, streams int }{{1, 1}, {3, 1}, {4, 2}, {8, 4}, {16, 4}} {
+		t.Run(fmt.Sprint(test.concurrent), func(t *testing.T) {
+			e := newEngine(t, func(ctx context.Context, _ []string, _, _ string, _ func(Progress)) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			})
+			defer e.Close()
+			e.online, e.wifi = true, true
+			e.state.Options.Concurrent = test.concurrent
+			e.preuploader = func(ctx context.Context, _, _, _ string, _ int64) (int64, error) {
+				<-ctx.Done()
+				return 0, ctx.Err()
+			}
+			for i := 0; i < 6; i++ {
+				j := beginStreamTest(t, e, fmt.Sprint("video-", i))
+				appendStreamTest(t, e, j, 0, bytes.Repeat([]byte{byte(i)}, 512<<10))
+			}
+			photo := importTest(t, e, "original")
+			e.Tick()
+			e.Tick()
+			e.mu.Lock()
+			streams := 0
+			for id := range e.active {
+				if e.find(id).Streaming {
+					streams++
+				}
+			}
+			photoActive := e.active[photo.ID] != nil
+			active := len(e.active)
+			e.mu.Unlock()
+			if streams != test.streams || active > test.concurrent || photoActive != (test.concurrent > 1) {
+				t.Fatalf("concurrency %d: %d streams, %d active, photo active %v", test.concurrent, streams, active, photoActive)
 			}
 		})
 	}

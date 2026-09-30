@@ -90,7 +90,7 @@ static id GSRangeProperty(id object, NSString *key) {
         if (error) *error = GSRangeError(3, @"This cloud original has no supported range size."); return nil;
     }
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ GSRangeSlots = dispatch_semaphore_create(2); });
+    dispatch_once(&once, ^{ GSRangeSlots = dispatch_semaphore_create(4); });
     while (dispatch_semaphore_wait(GSRangeSlots, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4))) {
         if (authorization && !authorization()) { if (error) *error = GSRangeError(2, @"Original streaming was interrupted."); return nil; }
     }
@@ -163,7 +163,7 @@ static id GSRangeProperty(id object, NSString *key) {
                         range.request = [NSURLRequest requestWithURL:asset.URL];
                         GSRangeData *data = [GSRangeData new]; range.dataRequest = data;
                         data.requestedOffset = offset; data.currentOffset = offset;
-                        data.requestedLength = (NSInteger)MIN(1ULL << 20, end - offset);
+                        data.requestedLength = (NSInteger)MIN(20ULL << 20, end - offset);
                         data.consume = ^BOOL(NSData *bytes, NSError **readError) {
                             NSString *version = [cache sourceVersionForSize:self.size];
                             if (!version || (self.sourceVersion && ![self.sourceVersion isEqual:version])) {
@@ -218,7 +218,7 @@ static id GSRangeProperty(id object, NSString *key) {
     }
     self.prime = nil;
     while (offset < self.size) {
-        unsigned long long end = MIN(self.size, ((offset / (20ULL << 20)) + 1) * (20ULL << 20));
+        unsigned long long end = MIN(self.size, ((offset / (60ULL << 20)) + 1) * (60ULL << 20));
         if (![self readWindow:offset length:end - offset consume:consume error:error]) return NO;
         offset = end;
     }
