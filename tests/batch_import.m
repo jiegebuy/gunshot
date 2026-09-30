@@ -10,6 +10,7 @@ static NSUInteger LargeAttempts;
 static NSString *LastDirectory;
 static dispatch_semaphore_t VideoRelease;
 static NSUInteger ActiveVideos,PeakVideos,StartedVideos;
+static NSUInteger ActiveLegacy,PeakLegacy,Concurrent=1;
 // Preparation runs several workers; fixture counters must not race.
 static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}}
 @interface PHFetchResult ()
@@ -34,11 +35,15 @@ static void Count(NSUInteger *counter){@synchronized(NSNull.null){(*counter)++;}
  PHFetchResult *result=[PHFetchResult new];result.items=items;return result;
 }
 @end
+BOOL GSPhotoAssetSupportsBoundedRanges(PHAsset *asset){
+ assert(!NSThread.isMainThread);
+ return [asset.localIdentifier hasPrefix:@"video-range-"];
+}
 BOOL GSNativeIdentityMatches(NSString *identifier){assert(NSThread.isMainThread);return [identifier isEqual:Identity];}
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
  assert(!NSThread.isMainThread);if(Offline)return nil;
  if([request[@"op"]isEqual:@"accounts"])return @{@"selected":Account};
- if([request[@"op"]isEqual:@"options"])return @{@"quality":@"original"};
+ if([request[@"op"]isEqual:@"options"])return @{@"quality":@"original",@"concurrent":@(Concurrent)};
  assert(NO);return nil;
 }
 NSArray *GSExportAsset(PHAsset *asset,NSURL *directory,NSError **error){
@@ -63,9 +68,10 @@ NSString *GSImportPhotoIdentifierChecked(NSString *identifier,NSString *account,
  assert(!NSThread.isMainThread&&[account isEqual:@"a@example.com"]&&[quality isEqual:@"original"]);Count(&Exports);
  if(authorization&&!authorization())return nil;
  if(VideoRelease&&[identifier hasPrefix:@"video-"]){
-  @synchronized(NSNull.null){StartedVideos++;ActiveVideos++;PeakVideos=MAX(PeakVideos,ActiveVideos);}
+  BOOL legacy=![identifier hasPrefix:@"video-range-"];
+  @synchronized(NSNull.null){StartedVideos++;ActiveVideos++;PeakVideos=MAX(PeakVideos,ActiveVideos);if(legacy){ActiveLegacy++;PeakLegacy=MAX(PeakLegacy,ActiveLegacy);}}
   assert(dispatch_semaphore_wait(VideoRelease,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
-  @synchronized(NSNull.null){ActiveVideos--;}
+  @synchronized(NSNull.null){ActiveVideos--;if(legacy)ActiveLegacy--;}
  }
  if(SwitchDuringExport)dispatch_sync(dispatch_get_main_queue(),^{Identity=@"identity-B";});
  if(CancelDuringExport)dispatch_sync(dispatch_get_main_queue(),^{GSStopBatchImport(YES);});
@@ -101,6 +107,29 @@ static NSDictionary *Run(NSArray *ids){
  assert(done&&![done[@"active"]boolValue]);
  if(LastDirectory)assert(![NSFileManager.defaultManager fileExistsAtPath:LastDirectory]);
  return done;
+}
+static void TestBoundedVideoWorkers(NSUInteger concurrent,BOOL mixed){
+ Concurrent=concurrent;StartedVideos=ActiveVideos=PeakVideos=ActiveLegacy=PeakLegacy=0;
+ NSMutableArray *ids=[NSMutableArray array];
+ for(NSUInteger i=0;i<6;i++)[ids addObject:[NSString stringWithFormat:@"video-range-%lu",(unsigned long)i]];
+ if(mixed)[ids addObjectsFromArray:@[@"video-legacy-1",@"video-legacy-2"]];
+ [ids addObjectsFromArray:@[@"photo-a",@"photo-b",@"photo-c"]];
+ NSUInteger expected=concurrent>=4?2:1,before=Queued;
+ VideoRelease=dispatch_semaphore_create(0);__block NSDictionary *result=nil;
+ assert(GSStartBatchImport(ids.count,@"album",YES,GSPhotoIdentifierProvider(ids),@"a@example.com",@"identity-A",nil,^(NSDictionary *state){result=state;}));
+ NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:5];BOOL ready=NO;
+ while(!ready&&deadline.timeIntervalSinceNow>0){
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+  @synchronized(NSNull.null){ready=Queued==before+3&&StartedVideos==expected;}
+ }
+ assert(ready&&!result);
+ @synchronized(NSNull.null){assert(ActiveVideos==expected&&ActiveLegacy==(mixed?1:0));}
+ for(NSUInteger i=0;i<ids.count;i++)dispatch_semaphore_signal(VideoRelease);
+ deadline=[NSDate dateWithTimeIntervalSinceNow:5];
+ while(!result&&deadline.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+ assert(result&&[result[@"queued"]unsignedIntegerValue]==ids.count&&[result[@"remaining"]intValue]==0);
+ assert(PeakVideos==expected&&PeakLegacy<=(mixed?1:0)&&ActiveVideos==0&&ActiveLegacy==0);
+ VideoRelease=nil;Concurrent=1;
 }
 int main(void){@autoreleasepool{
  NSMutableArray *ids=[NSMutableArray array];for(NSUInteger i=0;i<2000;i++)[ids addObject:[NSString stringWithFormat:@"%lu",(unsigned long)i]];
@@ -151,6 +180,10 @@ int main(void){@autoreleasepool{
  assert(StartedVideos==20&&PeakVideos==1&&ActiveVideos==0);
  VideoRelease=nil;
  NSLog(@"PASS later photos prepare with one blocked video and video preparation stays serial after photos finish");
+ TestBoundedVideoWorkers(8,NO);
+ TestBoundedVideoWorkers(8,YES);
+ TestBoundedVideoWorkers(1,NO);
+ NSLog(@"PASS two bounded cloud video workers, one full-resource reader, independent photos and single-slot settings");
  NSLog(@"PASS oversized original is deferred while later photos continue and remains retryable");
  NSLog(@"PASS 2000 identifier-only selections, missing IDs, individual export failure, account switch, cancellation, queue/IPC failure, retry and private batch diagnostics");
 }}

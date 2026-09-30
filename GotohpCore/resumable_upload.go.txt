@@ -47,6 +47,7 @@ type gunshotUploadSession struct {
 	Size        int64  `json:"size"`
 	Offset      int64  `json:"offset"`
 	Granularity int64  `json:"granularity"`
+	ChunkTarget int64  `json:"chunkTarget,omitempty"`
 	Finalize    []byte `json:"finalize,omitempty"`
 	Updated     int64  `json:"updated"`
 }

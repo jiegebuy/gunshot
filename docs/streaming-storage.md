@@ -12,6 +12,11 @@ resources, photographs, and earlier systems retain the existing reader.
 An incompatible cloud loader fails explicitly instead of silently starting a
 full-original download. This remains an unsupported private API integration.
 
+V42 album preparation permits two video workers at upload concurrency 4 or
+above. Metadata-eligible bounded cloud sources can use both; full-resource
+PhotoKit videos remain serialized. Photo preparation keeps independent workers,
+and the process-wide two-source cap still covers non-album entry points.
+
 Swift TaskLocal ownership propagates from our request into CloudAssets tasks.
 Only tasks carrying an active owned lease redirect item-replacement directories
 into `Library/Caches/GoToHP-PhotoSource`. Other callers retain FileManager's
@@ -27,6 +32,12 @@ enforces the limit independently: at most 65 MiB of unreclaimed file data per
 producer. This accommodates the maximum supported 64 MiB server granularity
 and the byte retained for explicit finalization. Multiple producers each have
 their own window. PhotoKit's current callback buffer is additional memory.
+
+Streaming uploads persist a learned chunk target with their private session.
+The target starts at 8 MiB, adjusts toward twelve seconds per acknowledgement
+between 1 and 32 MiB, and halves after an interrupted transfer. Server
+granularity remains authoritative. Successful chunks can immediately schedule
+the next available prefix; empty attempts and failures retain their backoff.
 
 After a preupload worker exits, the queue reclaims only a prefix acknowledged
 in its private, durable upload checkpoint. It extends SHA-1 and SHA-256 states,

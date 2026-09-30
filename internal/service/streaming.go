@@ -242,6 +242,8 @@ func (e *Engine) preupload(ctx context.Context, snapshot Job, cancel context.Can
 		if err != nil && ctx.Err() == nil {
 			j.StreamError = "preupload_retry"
 			j.Next += 14
+		} else if err == nil && ack > snapshot.StreamUploaded {
+			j.Next = 0
 		}
 	}
 	if e.save() == nil && j.State == "cancelled" {

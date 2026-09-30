@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -157,5 +158,38 @@ func TestStreamSuspensionAndPauseDoNotScheduleUploads(t *testing.T) {
 	}
 	if roleAllowed("settings", "stream_suspend") || !roleAllowed("googlephotos", "stream_suspend") {
 		t.Fatal("wrong stream operation owner")
+	}
+}
+
+func TestStreamingPacesOnlyIdleAndFailedChunks(t *testing.T) {
+	for _, mode := range []string{"progress", "idle", "failure"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEngine(t, nil)
+			defer e.Close()
+			j := beginStreamTest(t, e, mode)
+			appendStreamTest(t, e, j, 0, bytes.Repeat([]byte{1}, 1<<20))
+			e.preuploader = func(context.Context, string, string, string, int64) (int64, error) {
+				if mode == "failure" {
+					return 0, io.ErrUnexpectedEOF
+				}
+				if mode == "idle" {
+					return 0, nil
+				}
+				return 512 << 10, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			before := time.Now().Unix()
+			e.wg.Add(1)
+			e.preupload(ctx, *j, cancel)
+			if mode == "progress" && j.Next != 0 {
+				t.Fatal("successful chunk left ready data waiting")
+			}
+			if mode == "idle" && j.Next <= before {
+				t.Fatal("empty chunk can busy-loop")
+			}
+			if mode == "failure" && (j.Next < before+15 || j.StreamError != "preupload_retry") {
+				t.Fatal("failure lost retry backoff")
+			}
+		})
 	}
 }

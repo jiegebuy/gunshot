@@ -62,6 +62,15 @@ static NSArray *GSOriginalResources(PHAsset *asset,NSError **error){
  }
  return chosen;
 }
+BOOL GSPhotoAssetSupportsBoundedRanges(PHAsset *asset){
+#if GS_TEST_STORAGE
+ return NO;
+#else
+ if(asset.mediaType!=PHAssetMediaTypeVideo)return NO;
+ NSArray *resources=GSOriginalResources(asset,nil);
+ return resources.count==1&&[GSPhotoKitRangeSource supportsAsset:asset resource:resources.firstObject];
+#endif
+}
 static NSArray<NSURL *> *GSWriteOriginalResources(PHAsset *asset,NSURL *directory,unsigned long long *reservation,GSImportAuthorizationCheck authorization,GSImportStorageProgress progress,NSError **error,BOOL (^consume)(NSData *,NSError **)){
  if(!consume&&!GSWaitForStorage(directory,64ULL<<20,0,0,YES,asset.mediaType==PHAssetMediaTypeImage,authorization,progress,error,nil))return nil;
  NSArray *chosen=GSOriginalResources(asset,error);if(!chosen)return nil;

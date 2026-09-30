@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestGrowingFileUploadsBeforeEOFAndResumesInNewClient(t *testing.T) {
@@ -90,4 +92,52 @@ func TestPreuploadRejectsServerAheadOfProducer(t *testing.T) {
 	if s.chunks != 0 {
 		t.Fatal("sent data despite invalid acknowledgement")
 	}
+}
+
+func TestPreuploadPersistsAdaptiveTargetAndRecoversPartialFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, server, path := resumeFixture(t)
+		var lengths []int64
+		a.client.Transport = gunshotRoundTripper(func(r *http.Request) (*http.Response, error) {
+			if r.Header.Get("X-Goog-Upload-Command") == "upload" {
+				lengths = append(lengths, r.ContentLength)
+				switch len(lengths) {
+				case 1:
+					time.Sleep(48 * time.Second)
+				case 3:
+					// The server accepted a prefix before the response was lost.
+					n, err := io.CopyN(io.Discard, r.Body, 256<<10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					server.received += n
+					return nil, io.ErrUnexpectedEOF
+				default:
+					time.Sleep(time.Second)
+				}
+			}
+			return server.RoundTrip(r)
+		})
+		var ack int64
+		for attempt, expected := range []int64{2 << 20, 4 << 20, 2 << 20, 4 << 20} {
+			// Each worker/restart has a new API; the learned target must persist.
+			next := &Api{client: a.client, authData: a.authData, authResponseCache: a.authResponseCache}
+			previous := ack
+			var err error
+			ack, err = next.gunshotPreupload(context.Background(), path, server.size)
+			if (attempt == 2) != (err != nil) {
+				t.Fatal("unexpected transfer result", attempt, err)
+			}
+			s, loadErr := next.gunshotLoadSession(path, "", server.size)
+			if loadErr != nil || s.ChunkTarget != expected {
+				t.Fatal("adaptive target not persisted", attempt, loadErr, s)
+			}
+			if attempt == 2 && (ack != previous || s.Offset != previous || server.received <= ack) {
+				t.Fatal("guessed acknowledgement after interrupted request")
+			}
+		}
+		if len(lengths) != 4 || lengths[0] != 8<<20 || lengths[1] != 2<<20 || lengths[2] != 4<<20 || lengths[3] != 2<<20 || server.starts != 1 {
+			t.Fatal("wrong chunk targets or replaced resumable session", lengths, server.starts)
+		}
+	})
 }

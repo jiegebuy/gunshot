@@ -72,6 +72,14 @@ static id GSRangeProperty(id object, NSString *key) {
 @end
 
 @implementation GSPhotoKitRangeSource
++ (BOOL)supportsAsset:(PHAsset *)asset resource:(PHAssetResource *)resource {
+    if (asset.mediaType != PHAssetMediaTypeVideo || resource.type != PHAssetResourceTypeVideo ||
+        [GSRangeProperty(resource, @"locallyAvailable") boolValue]) return NO;
+    if (@available(iOS 27.0, *)) {} else { return NO; }
+    if (!NSClassFromString(@"GSPhotoKitTaskContext")) return NO;
+    unsigned long long size = [GSRangeProperty(resource, @"fileSize") unsignedLongLongValue];
+    return size >= 32 && size <= (8ULL << 30);
+}
 + (instancetype)openAsset:(PHAsset *)asset resource:(PHAssetResource *)resource authorization:(GSImportAuthorizationCheck)authorization error:(NSError **)error {
     if (asset.mediaType != PHAssetMediaTypeVideo || resource.type != PHAssetResourceTypeVideo ||
         [GSRangeProperty(resource, @"locallyAvailable") boolValue]) return nil;

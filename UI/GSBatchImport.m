@@ -39,10 +39,10 @@ static NSString *GSCheckBatchAccount(GSImportBatch *batch){
  if(!accounts)return @"service_unavailable";
  return [accounts[@"selected"]isEqual:batch.account]?nil:@"account_changed";
 }
-static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUInteger workers,
+static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUInteger workers,NSUInteger videoWorkers,
  GSBatchItemProvider provider,NSString *quality,NSMutableDictionary *state,GSBatchProgress progress){
  // Classify bounded metadata pages on this queue; only identifiers enter workers.
- NSMutableArray *photos=[NSMutableArray array],*videos=[NSMutableArray array];
+ NSMutableArray *photos=[NSMutableArray array],*videos=[NSMutableArray array],*rangeVideos=[NSMutableArray array];
  state[@"stage"]=@"scanning";GSRecordBatch(state);
  for(NSUInteger base=0;base<count;base+=256){@autoreleasepool{
   NSString *reason=GSCheckBatchAccount(batch);if(reason)return reason;
@@ -51,23 +51,29 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
    id item=provider(i)?:NSNull.null;[items addObject:item];
    if([item isKindOfClass:NSString.class]&&[item length])[ids addObject:item];
   }
-  NSMutableSet *videoIDs=[NSMutableSet set];
+  NSMutableSet *videoIDs=[NSMutableSet set],*rangeIDs=[NSMutableSet set];
   if(ids.count){
    PHFetchResult *found=[PHAsset fetchAssetsWithLocalIdentifiers:ids options:nil];
-   [found enumerateObjectsUsingBlock:^(PHAsset *asset,NSUInteger i,BOOL *stop){if(asset.mediaType==PHAssetMediaTypeVideo&&asset.localIdentifier)[videoIDs addObject:asset.localIdentifier];}];
+   [found enumerateObjectsUsingBlock:^(PHAsset *asset,NSUInteger i,BOOL *stop){
+    if(asset.mediaType==PHAssetMediaTypeVideo&&asset.localIdentifier){
+     [videoIDs addObject:asset.localIdentifier];
+     if(GSPhotoAssetSupportsBoundedRanges(asset))[rangeIDs addObject:asset.localIdentifier];
+    }
+   }];
   }
-  for(id item in items){NSMutableArray *target=[videoIDs containsObject:item]?videos:photos;[target addObject:item];}
+  for(id item in items){NSMutableArray *target=[rangeIDs containsObject:item]?rangeVideos:[videoIDs containsObject:item]?videos:photos;[target addObject:item];}
   GSRecordPreparation(state,@{@"scannedItems":@(MIN(count,base+256))});
  }}
  NSObject *lock=[NSObject new];
  __block NSTimeInterval lastUpdate=0;
  NSMutableDictionary *failures=[NSMutableDictionary dictionary];
  state[@"preparationWorkers"]=@(workers);
+ state[@"videoPreparationWorkers"]=@(videoWorkers);
  // Retry deferred originals after the other exports release their reservations.
  // Three passes bound repeated iCloud downloads when an original cannot fit.
  for(NSUInteger pass=0;pass<3;pass++){
- __block NSUInteger nextPhoto=0,nextVideo=0,active=0;
- NSMutableArray *deferredPhotos=[NSMutableArray array],*deferredVideos=[NSMutableArray array];
+ __block NSUInteger nextPhoto=0,nextVideo=0,nextRange=0,active=0,activeLegacy=0;
+ NSMutableArray *deferredPhotos=[NSMutableArray array],*deferredVideos=[NSMutableArray array],*deferredRanges=[NSMutableArray array];
  if(pass){
   state[@"storageRetryPass"]=@(pass);state[@"stage"]=@"waiting_storage";GSRecordBatch(state);
   for(NSUInteger tick=0;tick<10;tick++){
@@ -78,13 +84,17 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
  dispatch_group_t group=dispatch_group_create();
  for(NSUInteger worker=0;worker<workers;worker++)dispatch_group_async(group,dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
   while(YES){@autoreleasepool{
-   id item=nil;BOOL video=NO;
+   id item=nil;BOOL video=NO,range=NO;
    @synchronized(lock){
-    if(batch.stopReason||(nextPhoto>=photos.count&&(worker!=0||nextVideo>=videos.count)))break;
-    // PhotoKit may cache the whole video before delivering any bytes. Bound
-    // that unmeasured disk usage to one video; photos keep independent workers.
-    video=worker==0&&nextVideo<videos.count;
-    item=video?videos[nextVideo++]:photos[nextPhoto++];active++;state[@"activePreparations"]=@(active);
+    if(batch.stopReason)break;
+    // Full-resource PhotoKit reads stay serial. Bounded cloud ranges can use
+    // the second video worker while the remaining workers prepare photos.
+    if(worker<videoWorkers){
+     if(nextVideo<videos.count&&!activeLegacy){item=videos[nextVideo++];video=YES;activeLegacy++;}
+     else if(nextRange<rangeVideos.count){item=rangeVideos[nextRange++];video=YES;range=YES;}
+    }
+    if(!item){if(nextPhoto>=photos.count)break;item=photos[nextPhoto++];}
+    active++;state[@"activePreparations"]=@(active);
     state[@"stage"]=@"exporting";GSRecordBatch(state);
    }
    NSString *reason=GSCheckBatchAccount(batch);NSError *error=nil;NSString *job=nil;
@@ -99,7 +109,7 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
    }
    if(!reason)reason=GSCheckBatchAccount(batch);
    @synchronized(lock){
-    active--;state[@"activePreparations"]=@(active);
+    active--;if(video&&!range)activeLegacy--;state[@"activePreparations"]=@(active);
     if(reason){if(!batch.stopReason)batch.stopReason=reason;}
     // Repeated failure isolated to this asset is recorded and remains retryable.
     // Account/service failures above still stop the batch, rather than skipping
@@ -107,7 +117,7 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
     else {
      BOOL space=!job&&[error.domain isEqual:NSCocoaErrorDomain]&&error.code==NSFileWriteOutOfSpaceError;
      if(space){
-      [(video?deferredVideos:deferredPhotos)addObject:item];
+      [(range?deferredRanges:video?deferredVideos:deferredPhotos)addObject:item];
       if(!pass)state[@"storageDeferred"]=@([state[@"storageDeferred"]unsignedIntegerValue]+1);
       state[@"lastStorageFailure"]=error.userInfo[@"storage"]?:@{};
      }else{
@@ -129,8 +139,8 @@ static NSString *GSPreparePhotos(GSImportBatch *batch,NSUInteger count,NSUIntege
  });
  dispatch_group_wait(group,DISPATCH_TIME_FOREVER);
  if(batch.stopReason)return batch.stopReason;
- if(!deferredPhotos.count&&!deferredVideos.count)return nil;
- photos=deferredPhotos;videos=deferredVideos;
+ if(!deferredPhotos.count&&!deferredVideos.count&&!deferredRanges.count)return nil;
+ photos=deferredPhotos;videos=deferredVideos;rangeVideos=deferredRanges;
  }
  if([state[@"storageDeferred"]unsignedIntegerValue])return @"storage_deferred";
  return batch.stopReason;
@@ -159,7 +169,8 @@ BOOL GSStartBatchImport(NSUInteger count,NSString *source,BOOL assets,GSBatchIte
    // Preparation must outpace uploads: 1.5 workers per upload slot, at least 4.
    NSUInteger concurrent=MAX((NSUInteger)1,[options[@"concurrent"]unsignedIntegerValue]);
    NSUInteger workers=MIN(count,MIN((NSUInteger)GS_IMPORT_LANES,MAX((NSUInteger)4,concurrent+concurrent/2)));
-   reason=GSPreparePhotos(batch,count,workers,provider,quality,state,progress);
+   NSUInteger videoWorkers=MIN(workers,MAX((NSUInteger)1,MIN((NSUInteger)2,concurrent/2)));
+   reason=GSPreparePhotos(batch,count,workers,videoWorkers,provider,quality,state,progress);
   }
   for(NSUInteger index=0;!assets&&index<count&&!reason;index++){@autoreleasepool{
    reason=GSCheckBatchAccount(batch);if(reason)break;

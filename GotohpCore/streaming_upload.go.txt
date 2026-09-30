@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"time"
 )
 
 // Transfer only a durable, producer-verified prefix. The queue serializes calls
@@ -78,19 +79,33 @@ func (a *Api) gunshotPreupload(ctx context.Context, path string, available int64
 	}
 	// Retain at least one byte for the sealed-file path to explicitly finalize.
 	// Even an exact multiple of the server granularity must never finalize here.
-	n := min(max(gunshotResumeChunk, s.Granularity), available-accepted-1)
+	target := s.ChunkTarget
+	if target < 1<<20 || target > 32<<20 {
+		target = gunshotResumeChunk
+	}
+	n := min(max(target, s.Granularity), available-accepted-1)
 	n = (n / s.Granularity) * s.Granularity
 	if n <= 0 {
 		return accepted, nil
 	}
+	started := time.Now()
 	ack, final, err := a.gunshotResumeRequest(ctx, path, s, accepted, n, io.NewSectionReader(f, accepted, n))
 	if err != nil {
+		if ctx.Err() == nil {
+			// A fresh preupload API is constructed for each chunk. Keep the
+			// smaller retry target with the session, without guessing its offset.
+			s.ChunkTarget = max(1<<20, target/2)
+			if saveErr := gunshotSaveSession(path, s); saveErr != nil {
+				return accepted, saveErr
+			}
+		}
 		return accepted, err
 	}
 	if len(final) != 0 || ack <= accepted || ack > accepted+n {
 		return accepted, errors.New("invalid stream chunk acknowledgement")
 	}
 	s.Offset = ack
+	s.ChunkTarget = gunshotNextChunk(target, ack-accepted, time.Since(started))
 	if err = gunshotSaveSession(path, s); err != nil {
 		return ack, err
 	}
