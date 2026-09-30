@@ -41,6 +41,10 @@ jobs:
           clang -O2 -fobjc-arc -framework Foundation -Wno-deprecated-declarations -c UI/GSPhotoKitCache.m -o .build/photo-cache.o
           swiftc -parse-as-library -swift-version 5 -import-objc-header UI/GSPhotoKitCache.h UI/GSPhotoKitTaskContext.swift tests/photo_cache.swift .build/photo-cache.o -o .build/photo-cache-test
           .build/photo-cache-test
+      - name: Bounded PhotoKit range pipeline
+        run: |
+          clang -O1 -g -fobjc-arc -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address -framework Foundation UI/GSPhotoKitRangePump.m tests/photo_range_pump.m -o .build/photo-range-test
+          .build/photo-range-test
   core:
     runs-on: ubuntu-latest
     steps:

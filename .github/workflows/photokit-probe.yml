@@ -6,6 +6,7 @@ on:
       - 'UI/GSPhotoKitCache.*'
       - 'UI/GSPhotoKitTaskContext.swift'
       - 'UI/GSPhotoKitRangeSource.*'
+      - 'UI/GSPhotoKitRangePump.*'
       - '.github/workflows/photokit-probe.yml'
   workflow_dispatch:
 permissions:
@@ -15,6 +16,11 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Range ordering and cancellation
+        run: |
+          mkdir -p .build
+          clang -O1 -g -fobjc-arc -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address -framework Foundation UI/GSPhotoKitRangePump.m tests/photo_range_pump.m -o .build/photo-range-test
+          .build/photo-range-test
       - name: Build standalone diagnostic app
         run: bash experiments/photokit/build.sh
       - uses: actions/upload-artifact@v4

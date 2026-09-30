@@ -1,5 +1,6 @@
 #import "GSPhotoKitRangeSource.h"
 #import "GSPhotoKitCache.h"
+#import "GSPhotoKitRangePump.h"
 #import "GSImportStorage.h"
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
@@ -12,55 +13,6 @@ static NSError *GSRangeError(NSInteger code, NSString *message) {
 static id GSRangeProperty(id object, NSString *key) {
     @try { return [object valueForKey:key]; } @catch (__unused NSException *exception) { return nil; }
 }
-
-@interface GSRangeData : NSObject
-@property long long requestedOffset;
-@property NSInteger requestedLength;
-@property long long currentOffset;
-@property(copy) BOOL (^consume)(NSData *, NSError **);
-@property NSError *failure;
-- (BOOL)requestsAllDataToEndOfResource;
-- (void)respondWithData:(NSData *)data;
-@end
-@implementation GSRangeData
-- (BOOL)requestsAllDataToEndOfResource { return NO; }
-- (void)respondWithData:(NSData *)data {
-    @synchronized(self) {
-        if (self.failure) return;
-        if (self.currentOffset < self.requestedOffset || data.length > (NSUInteger)(self.requestedOffset + self.requestedLength - self.currentOffset)) {
-            self.failure = GSRangeError(1, @"PhotoKit returned an invalid byte range."); return;
-        }
-        NSError *error = nil;
-        if (!self.consume(data, &error)) { self.failure = error ?: GSRangeError(2, @"Original streaming was interrupted."); return; }
-        self.currentOffset += data.length;
-    }
-}
-@end
-
-@interface GSRangeRequest : NSObject
-@property NSURLRequest *request;
-@property GSRangeData *dataRequest;
-@property NSURLResponse *response;
-@property NSURLRequest *redirect;
-@property dispatch_semaphore_t done;
-@property NSError *failure;
-@property BOOL finished;
-@property BOOL cancelled;
-- (id)contentInformationRequest;
-- (BOOL)isFinished;
-- (BOOL)isCancelled;
-- (void)finishLoading;
-- (void)finishLoadingWithError:(NSError *)error;
-@end
-@implementation GSRangeRequest
-- (id)contentInformationRequest { return nil; }
-- (BOOL)isFinished { return self.finished; }
-- (BOOL)isCancelled { return self.cancelled; }
-- (void)finishLoading { [self finishLoadingWithError:nil]; }
-- (void)finishLoadingWithError:(NSError *)error {
-    @synchronized(self) { if (self.finished) return; self.failure = error; self.finished = YES; dispatch_semaphore_signal(self.done); }
-}
-@end
 
 @interface GSPhotoKitRangeSource ()
 @property PHAsset *asset;
@@ -157,21 +109,10 @@ static id GSRangeProperty(id object, NSString *key) {
                 if (([name isEqual:@"CloudAsset.LoadingRequestHandler"] || [name isEqual:@"CloudAssets.LoadingRequestHandler"]) &&
                     [delegate respondsToSelector:@selector(resourceLoader:shouldWaitForLoadingOfRequestedResource:)]) {
                     dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-                    unsigned long long offset = start, end = start + length;
-                    while (offset < end && !(failure = [self interruption])) { @autoreleasepool {
-                        GSRangeRequest *range = [GSRangeRequest new]; range.done = dispatch_semaphore_create(0);
-                        range.request = [NSURLRequest requestWithURL:asset.URL];
-                        GSRangeData *data = [GSRangeData new]; range.dataRequest = data;
-                        data.requestedOffset = offset; data.currentOffset = offset;
-                        data.requestedLength = (NSInteger)MIN(20ULL << 20, end - offset);
-                        data.consume = ^BOOL(NSData *bytes, NSError **readError) {
-                            NSString *version = [cache sourceVersionForSize:self.size];
-                            if (!version || (self.sourceVersion && ![self.sourceVersion isEqual:version])) {
-                                if (readError) *readError = GSRangeError(7, @"Original identity or cache ownership changed."); return NO;
-                            }
-                            self.sourceVersion = version;
-                            return consume(bytes, readError);
-                        };
+                    GSPhotoKitRangePump *pump = [GSPhotoKitRangePump new];
+                    pump.URL = asset.URL;
+                    pump.interruption = ^NSError *{ return [self interruption]; };
+                    pump.submit = ^(GSPhotoKitRangeRequest *range) {
                         dispatch_async(queue, ^{
                             if (![cache perform:^{
                                 @try {
@@ -180,25 +121,25 @@ static id GSRangeProperty(id object, NSString *key) {
                                 } @catch (__unused NSException *exception) { [range finishLoadingWithError:GSRangeError(8, @"PhotoKit rejected the requested range.")]; }
                             }]) [range finishLoadingWithError:GSRangeError(7, @"The original cache is closed.")];
                         });
-                        BOOL finished = [self wait:range.done failure:&failure cancel:^{
-                            range.cancelled = YES;
-                            dispatch_async(queue, ^{
-                                if ([delegate respondsToSelector:@selector(resourceLoader:didCancelLoadingRequest:)])
-                                    [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)range];
-                            });
-                        }];
-                        if (finished) {
-                            dispatch_sync(queue, ^{
-                                if ([delegate respondsToSelector:@selector(resourceLoader:didCancelLoadingRequest:)])
-                                    [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)range];
-                            });
+                    };
+                    pump.releaseRequest = ^(GSPhotoKitRangeRequest *range, dispatch_block_t released) {
+                        dispatch_async(queue, ^{
+                            if ([delegate respondsToSelector:@selector(resourceLoader:didCancelLoadingRequest:)])
+                                [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)range];
+                            released();
+                        });
+                    };
+                    success = [pump readOffset:start length:length consume:^BOOL(NSData *bytes, NSError **readError) {
+                        NSString *version = [cache sourceVersionForSize:self.size];
+                        if (!version || (self.sourceVersion && ![self.sourceVersion isEqual:version])) {
+                            if (readError) *readError = GSRangeError(7, @"Original identity or cache ownership changed."); return NO;
                         }
-                        if (!finished || range.failure || data.failure || data.currentOffset != (long long)offset + data.requestedLength) {
-                            failure = failure ?: data.failure ?: range.failure ?: GSRangeError(9, @"PhotoKit returned an incomplete range."); break;
-                        }
-                        offset += data.requestedLength;
-                    }}
-                    success = offset == end && !failure;
+                        self.sourceVersion = version;
+                        return consume(bytes, readError);
+                    } error:&failure];
+                    if (pump.cancellationUnconfirmed) {
+                        @synchronized(GSPhotoKitRangeSource.class) { GSRangePoisoned = YES; }
+                    }
                 } else failure = GSRangeError(6, @"The original does not provide the expected streaming reader.");
                 [asset cancelLoading];
             } else failure = failure ?: requestError ?: GSRangeError(6, @"PhotoKit did not provide an original streaming reader.");
