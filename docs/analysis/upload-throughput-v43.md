@@ -58,3 +58,27 @@ only after durable consumption and window teardown.
 The larger source window and four concurrent producers require a new
 physical-device upload measurement. The source-only comparison does not
 establish 5 MB/s end-to-end throughput.
+
+## Production reader and installation checks
+
+The v9 probe used the exact V43 reader on a separate 139,955,954-byte original.
+It completed the full read in 77.150 seconds. After restarting the probe, a
+read from 59,768,832 (57 MiB, deliberately crossing the new window boundary)
+delivered the remaining 80,187,122 bytes with the same source version. The
+full hash and resumed tail hash matched independent ordinary PhotoKit reads:
+
+- Full: `9f08ecef2379a67a2eff8bc42c94b44b027d8d946d418fd8ee5a23278d433bb2`
+- Tail: `12f76389d1acdf875817326673ee75564d5465dfdf6bc03d9ab14c46503f556f`
+
+The general temporary directory and owned range-cache directory were empty
+afterward. Other probe cache files were left alone. Local evidence:
+`.build/photokit-results/result-speed-v9-*.json`.
+
+All V43 CI jobs passed at 1515ce3:
+https://github.com/jiegebuy/gunshot/actions/runs/36683254358
+
+V43 was installed and launch-verified. Eight interrupted jobs and twenty
+private checkpoint hashes/retained-file allocations matched the pre-install
+baseline exactly. Queue state, options, 21,043 source receipts and 20,756
+fingerprint receipts were preserved. Signed package SHA-256:
+`8bfc2252de1719543483ca666b5448a5fd4befc01bf46ed98b2612ced7c27aea`.
