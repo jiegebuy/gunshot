@@ -69,6 +69,11 @@ media URLs. Compare 5 MiB requests at parallelism 1, 2, and 4 with the same
 60 MiB owned window, then verify the full original hash and cache teardown.
 Keep the iCloud QUIC-blocking rule enabled during every comparison.
 
+Version 11 extends the diagnostic cohort limit to eight (40 MiB of payload).
+Error reports include at most three underlying error domain/code pairs, with
+no error descriptions, user-info dictionaries, or credential-bearing URLs.
+The production reader and its request limits are unchanged.
+
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded
 but not changed based on guessed enum values. File URLs are read as raw bytes;

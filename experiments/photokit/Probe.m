@@ -16,7 +16,18 @@ static NSString *Documents(void) {
     return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
 }
 static NSDictionary *Failure(NSError *error) {
-    return error ? @{@"domain": error.domain, @"code": @(error.code)} : @{};
+    if (!error) return @{};
+    NSMutableDictionary *result = [@{@"domain": error.domain, @"code": @(error.code)} mutableCopy];
+    NSMutableArray *underlying = [NSMutableArray array];
+    NSError *current = error;
+    for (NSUInteger depth = 0; depth < 3; depth++) {
+        id next = current.userInfo[NSUnderlyingErrorKey];
+        if (![next isKindOfClass:NSError.class] || next == current) break;
+        current = next;
+        [underlying addObject:@{@"domain": current.domain, @"code": @(current.code)}];
+    }
+    if (underlying.count) result[@"underlying"] = underlying;
+    return result;
 }
 static unsigned long long FreeBytes(void) {
     return [[NSFileManager.defaultManager attributesOfFileSystemForPath:Documents() error:nil][NSFileSystemFreeSize] unsignedLongLongValue];
@@ -307,8 +318,8 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
     unsigned long long end = start + MIN(length ?: expected, expected - start);
     unsigned long long chunk = [command[@"rangeChunkBytes"] unsignedLongLongValue] ?: (1ULL << 20);
     chunk = MAX(1ULL << 20, MIN(chunk, 20ULL << 20));
-    NSUInteger parallel = MAX((NSUInteger)1, MIN((NSUInteger)4, [command[@"parallelRanges"] unsignedIntegerValue]));
-    // Bound out-of-order memory to four 5 MiB requests in the diagnostic app.
+    NSUInteger parallel = MAX((NSUInteger)1, MIN((NSUInteger)8, [command[@"parallelRanges"] unsignedIntegerValue]));
+    // Bound out-of-order payload to eight 5 MiB requests in the diagnostic app.
     if (parallel > 1) chunk = MIN(chunk, 5ULL << 20);
     @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(chunk); run.values[@"parallelRanges"] = @(parallel); }
     dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
