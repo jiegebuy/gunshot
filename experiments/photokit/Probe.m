@@ -243,6 +243,9 @@ static void WaitForRequest(ProbeRun *run, dispatch_semaphore_t done, void (^canc
 @property NSInteger requestedLength;
 @property long long currentOffset;
 @property ProbeRun *run;
+@property NSMutableData *buffer;
+@property NSUInteger callbacks;
+@property NSTimeInterval firstCallbackSeconds;
 - (BOOL)requestsAllDataToEndOfResource;
 - (void)respondWithData:(NSData *)data;
 @end
@@ -253,7 +256,12 @@ static void WaitForRequest(ProbeRun *run, dispatch_semaphore_t done, void (^canc
         if (self.currentOffset < self.requestedOffset || data.length > (NSUInteger)(self.requestedOffset + self.requestedLength - self.currentOffset)) {
             @synchronized(self.run) { self.run.stopped = YES; self.run.stopReason = @"range_overrun"; } return;
         }
-        [self.run consume:data]; self.currentOffset += data.length;
+        if ([self.run shouldStop]) return;
+        if (!self.callbacks) self.firstCallbackSeconds = -self.run.start.timeIntervalSinceNow;
+        self.callbacks++;
+        if (self.buffer) [self.buffer appendData:data];
+        else if (![self.run consume:data]) return;
+        self.currentOffset += data.length;
     }
 }
 @end
@@ -299,15 +307,23 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
     unsigned long long end = start + MIN(length ?: expected, expected - start);
     unsigned long long chunk = [command[@"rangeChunkBytes"] unsignedLongLongValue] ?: (1ULL << 20);
     chunk = MAX(1ULL << 20, MIN(chunk, 20ULL << 20));
-    @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(chunk); }
+    NSUInteger parallel = MAX((NSUInteger)1, MIN((NSUInteger)4, [command[@"parallelRanges"] unsignedIntegerValue]));
+    // Bound out-of-order memory to four 5 MiB requests in the diagnostic app.
+    if (parallel > 1) chunk = MIN(chunk, 5ULL << 20);
+    @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(chunk); run.values[@"parallelRanges"] = @(parallel); }
     dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     NSUInteger ranges = 0;
     while (offset < end && ![run shouldStop]) { @autoreleasepool {
+        NSMutableArray<ProbeRangeRequest *> *batch = [NSMutableArray array];
+        unsigned long long scheduled = offset;
+        for (NSUInteger index = 0; index < parallel && scheduled < end; index++) {
         ProbeRangeRequest *request = [ProbeRangeRequest new]; request.done = dispatch_semaphore_create(0);
         request.request = [NSURLRequest requestWithURL:asset.URL];
         ProbeRangeData *data = [ProbeRangeData new]; data.run = run;
-        data.requestedOffset = offset; data.currentOffset = offset;
-        data.requestedLength = (NSInteger)MIN(chunk, end - offset); request.dataRequest = data;
+        data.requestedOffset = scheduled; data.currentOffset = scheduled;
+        data.requestedLength = (NSInteger)MIN(chunk, end - scheduled); request.dataRequest = data;
+        if (parallel > 1) data.buffer = [NSMutableData data];
+        [batch addObject:request]; scheduled += data.requestedLength;
         GSPhotoKitCache *cache = run.ownedCache;
         dispatch_async(queue, ^{
             dispatch_block_t read = ^{
@@ -322,6 +338,10 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
                 if (![cache perform:read]) [request finishLoadingWithError:[NSError errorWithDomain:@"Probe.CacheClosed" code:1 userInfo:nil]];
             } else read();
         });
+        }
+        BOOL batchOK = YES;
+        for (ProbeRangeRequest *request in batch) {
+        ProbeRangeData *data = request.dataRequest;
         WaitForRequest(run, request.done, ^{
             request.cancelled = YES;
             dispatch_async(queue, ^{
@@ -336,11 +356,26 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
                     [delegate resourceLoader:loader didCancelLoadingRequest:(AVAssetResourceLoadingRequest *)(id)request];
             });
         }
-        if (request.error || data.currentOffset != (long long)offset + data.requestedLength) {
-            @synchronized(run) { run.values[@"rangeError"] = Failure(request.error); run.values[@"rangeShortRead"] = @(data.currentOffset != (long long)offset + data.requestedLength); } break;
+        BOOL complete = request.finished && !request.error && data.currentOffset == data.requestedOffset + data.requestedLength;
+        @synchronized(run) {
+            NSMutableArray *timings = [run.values[@"rangeTimings"] mutableCopy] ?: [NSMutableArray array];
+            if (timings.count < 4096) [timings addObject:@{@"offset": @(data.requestedOffset), @"length": @(data.requestedLength), @"callbacks": @(data.callbacks), @"firstCallbackSeconds": @(data.firstCallbackSeconds), @"drainedSeconds": @(-run.start.timeIntervalSinceNow), @"complete": @(complete)}];
+            run.values[@"rangeTimings"] = timings;
         }
+        if (!complete) {
+            @synchronized(run) {
+                run.values[@"rangeError"] = Failure(request.error); run.values[@"rangeShortRead"] = @(data.currentOffset != data.requestedOffset + data.requestedLength);
+                run.stopped = YES; run.stopReason = run.stopReason ?: @"range_failed";
+            }
+            batchOK = NO;
+        }
+        if (batchOK && data.buffer && ![run consume:data.buffer]) batchOK = NO;
+        data.buffer = nil;
+        if (!batchOK) continue;
         offset += data.requestedLength; ranges++;
         @synchronized(run) { run.values[@"completedRanges"] = @(ranges); run.values[@"nextRangeOffset"] = @(offset); }
+        }
+        if (!batchOK) break;
     }}
     @synchronized(run) { run.values[@"rangeComplete"] = @(offset == end && ![run shouldStop]); }
     if (![command[@"deferFinish"] boolValue]) {

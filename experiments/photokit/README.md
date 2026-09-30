@@ -60,6 +60,15 @@ per-window elapsed seconds. Compare request sizes and `windowBytes` using
 cache is removed and the complete original hash matches before adopting
 throughput changes. Window size remains capped at 64 MiB.
 
+Version 10 accepts `parallelRanges` (1-4, default 1). More than one submits a
+bounded cohort of adjacent requests to the same loader, with each request
+capped at 5 MiB and no more than 20 MiB of out-of-order payload held in memory.
+Callbacks do not wait for earlier ranges; completed data is hashed in byte
+order by the reader. `rangeTimings` records callback and drain times without
+media URLs. Compare 5 MiB requests at parallelism 1, 2, and 4 with the same
+60 MiB owned window, then verify the full original hash and cache teardown.
+Keep the iCloud QUIC-blocking rule enabled during every comparison.
+
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded
 but not changed based on guessed enum values. File URLs are read as raw bytes;
