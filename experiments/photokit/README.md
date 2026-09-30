@@ -54,6 +54,12 @@ storage. This is an isolated cache-reclamation experiment, not a supported
 CloudAssets cache API or production cleanup policy. Reopen/hash tests are
 required to detect stale internal cache state after this intervention.
 
+Version 8 accepts `rangeChunkBytes` (1-20 MiB, default 1 MiB) and reports
+per-window elapsed seconds. Compare request sizes and `windowBytes` using
+`ownedCache: true` and `releaseCompletedRequests: true`; confirm each owned
+cache is removed and the complete original hash matches before adopting
+throughput changes. Window size remains capped at 64 MiB.
+
 For video modes, `delivery: "automatic"` tests automatic rather than high
 quality delivery. The undocumented numeric `streamingVideoIntent` is recorded
 but not changed based on guessed enum values. File URLs are read as raw bytes;

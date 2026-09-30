@@ -297,7 +297,9 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
     if (!expected || expected > (8ULL << 30) || start >= expected) return;
     unsigned long long length = [command[@"rangeLength"] unsignedLongLongValue];
     unsigned long long end = start + MIN(length ?: expected, expected - start);
-    @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(1 << 20); }
+    unsigned long long chunk = [command[@"rangeChunkBytes"] unsignedLongLongValue] ?: (1ULL << 20);
+    chunk = MAX(1ULL << 20, MIN(chunk, 20ULL << 20));
+    @synchronized(run) { run.values[@"rangeStart"] = @(start); run.values[@"rangeChunkBytes"] = @(chunk); }
     dispatch_queue_t queue = loader.delegateQueue ?: dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     NSUInteger ranges = 0;
     while (offset < end && ![run shouldStop]) { @autoreleasepool {
@@ -305,7 +307,7 @@ static void ReadLoaderRanges(ProbeRun *run, AVURLAsset *asset, NSDictionary *com
         request.request = [NSURLRequest requestWithURL:asset.URL];
         ProbeRangeData *data = [ProbeRangeData new]; data.run = run;
         data.requestedOffset = offset; data.currentOffset = offset;
-        data.requestedLength = (NSInteger)MIN(1ULL << 20, end - offset); request.dataRequest = data;
+        data.requestedLength = (NSInteger)MIN(chunk, end - offset); request.dataRequest = data;
         GSPhotoKitCache *cache = run.ownedCache;
         dispatch_async(queue, ^{
             dispatch_block_t read = ^{
@@ -479,6 +481,7 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
     unsigned long long end = start + MIN(length ?: expected, expected - start);
     NSMutableArray *windows = [NSMutableArray array];
     while (offset < end && ![run shouldStop]) {
+        NSTimeInterval began = NSProcessInfo.processInfo.systemUptime;
         unsigned long long before = run.count, bytes = MIN(window, end - offset);
         NSSet *temporaryBefore = [NSSet setWithArray:[NSFileManager.defaultManager contentsOfDirectoryAtPath:NSTemporaryDirectory() error:nil] ?: @[]];
         if ([command[@"ownedCache"] boolValue]) {
@@ -492,6 +495,7 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
             ReadVideo(run, asset, part);
         }
         NSMutableDictionary *sample = [TemporaryStorage() mutableCopy];
+        sample[@"seconds"] = @(NSProcessInfo.processInfo.systemUptime - began);
         sample[@"loaderAliveAfterWindow"] = @(run.lastLoaderDelegate != nil);
         sample[@"offset"] = @(offset); sample[@"bytes"] = @(run.count - before);
         if (run.ownedCache) {
