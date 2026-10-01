@@ -654,7 +654,7 @@ static void ReadVideoWindows(ProbeRun *run, PHAsset *asset, NSDictionary *comman
             @synchronized(run) { run.values[@"sourceBefore"] = Describe(asset, resource); }
             if ([mode isEqual:@"production-range"]) {
                 NSError *error = nil;
-                GSPhotoKitRangeSource *source = [GSPhotoKitRangeSource openAsset:asset resource:resource authorization:^BOOL{ return ![run shouldStop]; } error:&error];
+                GSPhotoKitRangeSource *source = [GSPhotoKitRangeSource openAsset:asset resource:resource authorization:^BOOL{ return ![run shouldStop]; } progress:nil error:&error];
                 BOOL complete = source && [source readFromOffset:[command[@"startOffset"] unsignedLongLongValue] consume:^BOOL(NSData *data, NSError **readError) { return [run consume:data]; } error:&error];
                 @synchronized(run) { run.values[@"rangeSourceError"] = Failure(error); run.values[@"sourceVersion"] = source.sourceVersion ?: @""; }
                 [run finishHash:complete && ![command[@"startOffset"] unsignedLongLongValue]];
