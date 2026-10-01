@@ -92,6 +92,11 @@ static NSData *Run(NSString *mode, NSUInteger start, BOOL expectedSuccess, NSUIn
         @synchronized(loader) { return [mode isEqual:@"cancel"] && loader.submitted.count == 4 ? FixtureError() : nil; }
     };
     NSMutableData *result = [NSMutableData data];
+    __block unsigned long long received = 0;
+    pump.receivedBytes = ^(unsigned long long bytes) {
+        NSCAssert(!dispatch_get_specific(LoaderQueueKey), @"progress blocked the loader callback queue");
+        NSCAssert(bytes > 0, @"waiting reported progress"); received += bytes;
+    };
     NSError *error = nil;
     BOOL success = [pump readOffset:start length:loader.original.length - start consume:^BOOL(NSData *data, NSError **failure) {
         NSCAssert(!dispatch_get_specific(LoaderQueueKey), @"consumer blocked the loader callback queue");
@@ -104,6 +109,7 @@ static NSData *Run(NSString *mode, NSUInteger start, BOOL expectedSuccess, NSUIn
     NSCAssert(loader.released.count == loader.submitted.count, @"%@ leaked requests", mode);
     NSCAssert(pump.cancellationUnconfirmed == [mode isEqual:@"stuck"], @"%@ cancellation state", mode);
     if (success) {
+        NSCAssert(received == loader.original.length - start, @"source progress lost or duplicated bytes");
         NSCAssert([result isEqual:[loader.original subdataWithRange:NSMakeRange(start, loader.original.length - start)]], @"bytes reordered or duplicated");
         NSCAssert(loader.peak == 4, @"did not prefetch");
         for (GSPhotoKitRangeRequest *request in loader.submitted) {
@@ -121,7 +127,41 @@ static NSData *Run(NSString *mode, NSUInteger start, BOOL expectedSuccess, NSUIn
     return result;
 }
 
+static void TestPartialProgress(void) {
+    dispatch_queue_t queue = dispatch_queue_create("fixture.partial", DISPATCH_QUEUE_SERIAL);
+    NSObject *lock = [NSObject new];
+    __block NSUInteger received = 0, reports = 0, consumed = 0;
+    GSPhotoKitRangePump *pump = [GSPhotoKitRangePump new];
+    pump.URL = [NSURL URLWithString:@"fixture://partial"]; pump.chunkBytes = 16; pump.maxRequests = 1;
+    pump.requestTimeout = 2;
+    NSData *original = [[Loader new].original subdataWithRange:NSMakeRange(0, 16)];
+    pump.submit = ^(GSPhotoKitRangeRequest *request) {
+        dispatch_async(queue, ^{
+            [request.dataRequest respondWithData:[original subdataWithRange:NSMakeRange(0, 8)]];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), queue, ^{
+                @synchronized(lock) {
+                    NSCAssert(received == 8 && reports == 1 && consumed == 0, @"partial data was invisible or idle polls invented progress");
+                }
+                [request.dataRequest respondWithData:[original subdataWithRange:NSMakeRange(8, 8)]];
+                [request finishLoading];
+                [request.dataRequest respondWithData:original]; // Closed callbacks must not count.
+            });
+        });
+    };
+    pump.releaseRequest = ^(GSPhotoKitRangeRequest *request, dispatch_block_t done) { dispatch_async(queue, done); };
+    pump.receivedBytes = ^(unsigned long long bytes) {
+        @synchronized(lock) { received += bytes; reports++; }
+    };
+    NSError *error = nil;
+    BOOL success = [pump readOffset:0 length:16 consume:^BOOL(NSData *bytes, NSError **failure) {
+        NSCAssert([bytes isEqual:original], @"partial progress changed ordered bytes");
+        @synchronized(lock) { consumed += bytes.length; } return YES;
+    } error:&error];
+    NSCAssert(success && !error && received == 16 && reports == 2 && consumed == 16, @"partial progress contract");
+}
+
 int main(void) { @autoreleasepool {
+    TestPartialProgress();
     Run(@"rolling", 0, YES, NULL);
     Run(@"resume", 3, YES, NULL);
     for (NSString *mode in @[@"short", @"overrun", @"remote-error", @"consumer-error", @"cancel", @"timeout", @"stuck"])

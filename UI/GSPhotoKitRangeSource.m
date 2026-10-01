@@ -19,6 +19,7 @@ static id GSRangeProperty(id object, NSString *key) {
 @property(nonatomic, readwrite) unsigned long long size;
 @property(nonatomic, readwrite) NSString *sourceVersion;
 @property(copy) GSImportAuthorizationCheck authorization;
+@property(copy) GSImportStorageProgress progress;
 @property NSData *prime;
 @property BOOL slot;
 @end
@@ -32,7 +33,7 @@ static id GSRangeProperty(id object, NSString *key) {
     unsigned long long size = [GSRangeProperty(resource, @"fileSize") unsignedLongLongValue];
     return size >= 32 && size <= (8ULL << 30);
 }
-+ (instancetype)openAsset:(PHAsset *)asset resource:(PHAssetResource *)resource authorization:(GSImportAuthorizationCheck)authorization error:(NSError **)error {
++ (instancetype)openAsset:(PHAsset *)asset resource:(PHAssetResource *)resource authorization:(GSImportAuthorizationCheck)authorization progress:(GSImportStorageProgress)progress error:(NSError **)error {
     if (asset.mediaType != PHAssetMediaTypeVideo || resource.type != PHAssetResourceTypeVideo ||
         [GSRangeProperty(resource, @"locallyAvailable") boolValue]) return nil;
     if (@available(iOS 27.0, *)) {} else { return nil; }
@@ -48,6 +49,7 @@ static id GSRangeProperty(id object, NSString *key) {
     }
     GSPhotoKitRangeSource *source = [self new]; source.slot = YES;
     source.asset = asset; source.size = size; source.authorization = authorization;
+    source.progress = progress;
     NSMutableData *prime = [NSMutableData data];
     if (![source readWindow:0 length:MIN(1ULL << 20, size) consume:^BOOL(NSData *data, NSError **failure) {
         [prime appendData:data]; return YES;
@@ -112,6 +114,9 @@ static id GSRangeProperty(id object, NSString *key) {
                     GSPhotoKitRangePump *pump = [GSPhotoKitRangePump new];
                     pump.URL = asset.URL;
                     pump.interruption = ^NSError *{ return [self interruption]; };
+                    pump.receivedBytes = ^(unsigned long long bytes) {
+                        if (self.progress) self.progress(@{@"sourceReadBytesDelta": @(bytes)});
+                    };
                     pump.submit = ^(GSPhotoKitRangeRequest *range) {
                         dispatch_async(queue, ^{
                             if (![cache perform:^{

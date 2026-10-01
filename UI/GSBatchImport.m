@@ -22,7 +22,7 @@ void GSStopBatchImport(BOOL backgroundExpired){
 static void GSRecordBatch(NSDictionary *snapshot){@synchronized(GSImportBatch.class){GSLastBatch=[snapshot copy];}}
 static void GSRecordPreparation(NSMutableDictionary *state,NSDictionary *event){
  for(NSString *key in event){
-  NSString *counter=[key isEqual:@"exportedBytesDelta"]?@"exportedBytes":[key isEqual:@"cloudProgressDelta"]?@"cloudProgressUnits":[key isEqual:@"stagedBytesDelta"]?@"stagedBytes":nil;
+  NSString *counter=[key isEqual:@"exportedBytesDelta"]?@"exportedBytes":[key isEqual:@"cloudProgressDelta"]?@"cloudProgressUnits":[key isEqual:@"stagedBytesDelta"]?@"stagedBytes":[key isEqual:@"sourceReadBytesDelta"]?@"sourceReadBytes":nil;
   if(counter)state[counter]=@([state[counter]unsignedLongLongValue]+[event[key]unsignedLongLongValue]);
   else state[key]=event[key];
  }

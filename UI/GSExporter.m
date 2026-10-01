@@ -232,7 +232,7 @@ static NSString *GSImportStream(PHAsset *asset,NSURL *directory,NSString *accoun
   PHAssetResource *resource=resources.firstObject;
   if(!GSWaitForStorage(directory,64ULL<<20,0,0,!resuming,asset.mediaType==PHAssetMediaTypeImage,authorization,progress,&failure,nil))return nil;
 #if !GS_TEST_STORAGE
-  range=[GSPhotoKitRangeSource openAsset:asset resource:resource authorization:authorization error:&failure];
+  range=[GSPhotoKitRangeSource openAsset:asset resource:resource authorization:authorization progress:progress error:&failure];
   if(failure)return nil;
 #endif
   NSMutableDictionary *request=[@{@"op":@"begin",@"streaming":@YES,@"streamBounded":@YES,@"account":account,@"quality":quality?:@"original",@"sourceID":sourceID,@"timestamp":@((long long)(asset.creationDate?:NSDate.date).timeIntervalSince1970),@"resources":@[@{@"name":resource.originalFilename.lastPathComponent,@"size":@0}]}mutableCopy];

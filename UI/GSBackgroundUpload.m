@@ -37,7 +37,7 @@ static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
 static int64_t GSProgressUnits;
-static unsigned long long GSExportedBytes,GSCloudProgressUnits,GSStagedBytes,GSScannedItems,GSUploadBytes;
+static unsigned long long GSExportedBytes,GSCloudProgressUnits,GSStagedBytes,GSSourceReadBytes,GSScannedItems,GSUploadBytes;
 static BOOL GSPolling,GSUploadBaseline;
 // Google Photos begins UIKit background tasks continuously while it runs, and
 // one of them is begun again at the instant the background budget expires and
@@ -269,10 +269,12 @@ static void GSUpdatePreparationProgress(void){
  NSDictionary *batch=GSBatchImportSnapshot();
  unsigned long long bytes=[batch[@"exportedBytes"]unsignedLongLongValue],cloud=[batch[@"cloudProgressUnits"]unsignedLongLongValue];
  unsigned long long staged=[batch[@"stagedBytes"]unsignedLongLongValue];
+ unsigned long long received=[batch[@"sourceReadBytes"]unsignedLongLongValue];
  unsigned long long scanned=[batch[@"scannedItems"]unsignedLongLongValue];
- BOOL moved=bytes>GSExportedBytes||cloud>GSCloudProgressUnits||staged>GSStagedBytes||scanned>GSScannedItems;
+ BOOL moved=bytes>GSExportedBytes||cloud>GSCloudProgressUnits||staged>GSStagedBytes||received>GSSourceReadBytes||scanned>GSScannedItems;
  GSExportedBytes=MAX(GSExportedBytes,bytes);GSCloudProgressUnits=MAX(GSCloudProgressUnits,cloud);GSStagedBytes=MAX(GSStagedBytes,staged);
  GSScannedItems=MAX(GSScannedItems,scanned);
+ GSSourceReadBytes=MAX(GSSourceReadBytes,received);
  int64_t prepared=(int64_t)MIN(GSCount,[batch[@"processed"]unsignedIntegerValue])*1000;
  GSProgressUnits=MIN(GSBackgroundTotal()-1,MAX(GSProgressUnits+(moved?1:0),prepared));
  GSTask.progress.completedUnitCount=GSProgressUnits;
@@ -322,6 +324,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  if(!count)return;
  NSUInteger epoch=GSFinishBackground(NO,@"replaced");if(epoch!=GSEpoch)return;
  GSCount=MIN(count,(NSUInteger)(INT64_MAX/2000));GSProgressUnits=0;GSExportedBytes=0;GSCloudProgressUnits=0;GSStagedBytes=0;GSScannedItems=0;
+ GSSourceReadBytes=0;
  GSUploadBytes=0;GSUploadBaseline=NO;
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
  UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{

@@ -34,6 +34,7 @@ static NSError *GSRangeError(NSInteger code, NSString *message) {
 @property NSTimeInterval deadline;
 @property BOOL releaseStarted;
 @property BOOL released;
+@property unsigned long long reportedBytes;
 @end
 @implementation GSPhotoKitRangeRequest
 - (instancetype)init { if ((self = [super init])) _changed = dispatch_semaphore_create(0); return self; }
@@ -66,6 +67,17 @@ static NSError *GSRangeError(NSInteger code, NSString *message) {
     request.releaseStarted = YES;
     self.releaseRequest(request, ^{ request.released = YES; dispatch_semaphore_signal(request.changed); });
 }
+- (void)reportReceived:(NSArray<GSPhotoKitRangeRequest *> *)pending {
+    unsigned long long delta = 0;
+    for (GSPhotoKitRangeRequest *request in pending) {
+        @synchronized(request.dataRequest) {
+            unsigned long long received = request.dataRequest.currentOffset - request.dataRequest.requestedOffset;
+            delta += received - request.reportedBytes;
+            request.reportedBytes = received;
+        }
+    }
+    if (delta && self.receivedBytes) self.receivedBytes(delta);
+}
 - (BOOL)readOffset:(unsigned long long)offset length:(unsigned long long)length
            consume:(BOOL (^)(NSData *, NSError **))consume error:(NSError **)error {
     _cancellationUnconfirmed = NO;
@@ -94,6 +106,7 @@ static NSError *GSRangeError(NSInteger code, NSString *message) {
         }
         GSPhotoKitRangeRequest *request = pending.firstObject;
         while (!failure) {
+            [self reportReceived:pending];
             failure = self.interruption ? self.interruption() : nil;
             for (GSPhotoKitRangeRequest *other in pending) {
                 if (other.finished && other.failure) { failure = failure ?: other.failure; break; }

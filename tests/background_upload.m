@@ -259,6 +259,13 @@ static void TestPreparationProgress(void){
   GSPollBackground();assert(task.progress.completedUnitCount==2+(int64_t)tick); // Waiting is not progress.
  }
  dispatch_semaphore_t oldRelease=SummaryRelease;
+ // Cloud ranges may arrive slowly or out of order before any complete chunk
+ // reaches staging. Those actual bytes must reach the system while summary is blocked.
+ for(NSUInteger tick=1;tick<=40;tick++){
+  @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"sourceReadBytes":@(tick*131072)};}
+  GSPollBackground();assert(task.progress.completedUnitCount==42+(int64_t)tick&&GSPolling&&task.completions==0);
+  GSPollBackground();assert(task.progress.completedUnitCount==42+(int64_t)tick);
+ }
  @synchronized(RealLock){SummaryStarted=dispatch_semaphore_create(0);SummaryRelease=dispatch_semaphore_create(0);Batch=@{@"active":@YES,@"processed":@0};}
  GSBeginBackgroundUpload(20);FixtureTask *replacement=[FixtureTask new];Launch(replacement);Await(SummaryStarted);
  dispatch_semaphore_signal(oldRelease);Drain();
