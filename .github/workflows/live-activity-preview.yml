@@ -25,6 +25,7 @@ jobs:
         if: always()
         with:
           name: live-activity-visuals
+          include-hidden-files: true
           path: |
             packages/jailed/live-activity/
             .build/live-activity-ui/result.txt

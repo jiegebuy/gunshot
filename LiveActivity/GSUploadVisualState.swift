@@ -70,7 +70,7 @@ public struct GSUploadVisualReducer {
         let old = Dictionary(uniqueKeysWithValues: state.files.map { ($0.id, $0.uploaded) })
         let moved = files.contains { file in old[file.id].map { file.uploaded > $0 } ?? false }
         let measured = files.compactMap(\.speed)
-        let speed = measured.isEmpty ? nil : measured.reduce(Int64(0)) { sum, value in
+        let speed = measured.isEmpty || measured.count != files.count ? nil : measured.reduce(Int64(0)) { sum, value in
             let (next, overflow) = sum.addingReportingOverflow(value)
             return overflow ? Int64.max : next
         }

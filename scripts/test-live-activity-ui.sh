@@ -12,12 +12,17 @@ sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
 arch=$(uname -m)
 app=.build/live-activity-ui/Preview.app
 framework="$app/Frameworks/GoToHPActivity.framework"
-mkdir -p "$framework/Modules/GoToHPActivity.swiftmodule"
+extension="$app/PlugIns/GoToHPUploadProgress.appex"
+mkdir -p "$framework/Modules/GoToHPActivity.swiftmodule" "$extension"
 xcrun swiftc -sdk "$sdk" -target "$arch-apple-ios18.0-simulator" -swift-version 5 -parse-as-library \
  -module-name GoToHPActivity -application-extension -emit-library -emit-module \
  -emit-module-path "$framework/Modules/GoToHPActivity.swiftmodule/$arch-apple-ios-simulator.swiftmodule" \
  -Xlinker -install_name -Xlinker @rpath/GoToHPActivity.framework/GoToHPActivity \
  LiveActivity/GSUploadVisualState.swift LiveActivity/GSUploadAttributes.swift LiveActivity/GSUploadLiveActivity.swift -o "$framework/GoToHPActivity"
+xcrun swiftc -sdk "$sdk" -target "$arch-apple-ios18.0-simulator" -swift-version 5 -parse-as-library \
+ -module-name GoToHPUploadProgress -application-extension -F "$app/Frameworks" -framework GoToHPActivity \
+ -Xlinker -e -Xlinker _NSExtensionMain -Xlinker -rpath -Xlinker @executable_path/../../Frameworks \
+ LiveActivity/GSUploadCard.swift LiveActivity/GSUploadWidget.swift -o "$extension/GoToHPUploadProgress"
 xcrun swiftc -sdk "$sdk" -target "$arch-apple-ios18.0-simulator" -swift-version 5 -parse-as-library \
  -F "$app/Frameworks" -framework GoToHPActivity -Xlinker -rpath -Xlinker @executable_path/Frameworks \
  LiveActivity/GSUploadCard.swift tests/live_activity_preview.swift -o "$app/Preview"
@@ -26,10 +31,12 @@ from pathlib import Path
 import plistlib
 root=Path('.build/live-activity-ui/Preview.app')
 base={'CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'18.0'}
-(root/'Info.plist').write_bytes(plistlib.dumps(dict(base,CFBundleIdentifier='dev.tqmane.gunshot.activitypreview',CFBundleExecutable='Preview',CFBundleName='Preview',CFBundlePackageType='APPL',UIDeviceFamily=[1],UILaunchScreen={})))
+(root/'Info.plist').write_bytes(plistlib.dumps(dict(base,CFBundleIdentifier='dev.tqmane.gunshot.activitypreview',CFBundleExecutable='Preview',CFBundleName='Preview',CFBundlePackageType='APPL',UIDeviceFamily=[1],UILaunchScreen={},NSSupportsLiveActivities=True)))
 (root/'Frameworks/GoToHPActivity.framework/Info.plist').write_bytes(plistlib.dumps(dict(base,CFBundleIdentifier='dev.tqmane.gunshot.activitypreview.model',CFBundleExecutable='GoToHPActivity',CFBundleName='GoToHPActivity',CFBundlePackageType='FMWK')))
+(root/'PlugIns/GoToHPUploadProgress.appex/Info.plist').write_bytes(plistlib.dumps(dict(base,CFBundleIdentifier='dev.tqmane.gunshot.activitypreview.widget',CFBundleExecutable='GoToHPUploadProgress',CFBundleName='GoToHP Upload Progress',CFBundlePackageType='XPC!',UIDeviceFamily=[1,2],NSExtension={'NSExtensionPointIdentifier':'com.apple.widgetkit-extension'})))
 PY
 codesign --force --sign - "$framework"
+codesign --force --sign - "$extension"
 codesign --force --sign - "$app"
 python3 - <<'PY'
 import json, subprocess, pathlib, shutil

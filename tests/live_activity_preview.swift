@@ -44,14 +44,20 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = UIHostingController(rootView: PreviewCanvas())
         window.makeKeyAndVisible(); self.window = window
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            GSUploadLiveActivity.start(identifier: "fixture", language: "zh-hans")
+            print("ActivityKit start: \(GSUploadLiveActivity.snapshot())")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
             try! image.pngData()!.write(to: documents.appendingPathComponent("live-activity-preview.png"))
             let fits = measured.count == 2 && measured.values.allSatisfy { $0 <= 160 && $0 > 100 }
-            let result = "\(fits ? "PASS" : "FAIL") all file tiles fit the 160-point Live Activity limit: \(measured)"
+            let started = GSUploadLiveActivity.snapshot()["active"] as? Bool == true
+            let result = "\(fits && started ? "PASS" : "FAIL") all file tiles fit the 160-point Live Activity limit: \(measured); ActivityKit registered: \(started)"
             try! result.write(to: documents.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
-            print(result); exit(fits ? 0 : 1)
+            GSUploadLiveActivity.finish(success: true)
+            print(result); exit(fits && started ? 0 : 1)
         }
         return true
     }
