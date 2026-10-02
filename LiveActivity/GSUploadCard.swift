@@ -67,6 +67,7 @@ struct GSUploadCard: View {
     let language: String
     var stale = false
     var glass = true
+    var showHeader = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private var unavailable: Bool { stale || state.status == 3 }
@@ -79,6 +80,7 @@ struct GSUploadCard: View {
     }
     private var contents: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if showHeader {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.up.circle.fill").symbolRenderingMode(.hierarchical)
                     .font(.system(size: 23, weight: .medium)).foregroundStyle(unavailable ? Color.secondary : .mint)
@@ -95,6 +97,7 @@ struct GSUploadCard: View {
                         .contentTransition(.numericText()).lineLimit(1).minimumScaleFactor(0.75)
                     Text(GSUploadText.text("Recent 12 seconds", language: language)).font(.system(size: 8)).foregroundStyle(.secondary)
                 }
+            }
             }
             if state.files.isEmpty {
                 HStack(spacing: 8) {
@@ -116,7 +119,7 @@ struct GSUploadCard: View {
                     }
                 }
             }
-        }.padding(.horizontal, 14).padding(.vertical, 8)
+        }.padding(.horizontal, 14).padding(.vertical, 7)
     }
     var body: some View {
         if !glass { contents }

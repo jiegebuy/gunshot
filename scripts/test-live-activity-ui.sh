@@ -14,7 +14,7 @@ app=.build/live-activity-ui/Preview.app
 framework="$app/Frameworks/GoToHPActivity.framework"
 mkdir -p "$framework/Modules/GoToHPActivity.swiftmodule"
 xcrun swiftc -sdk "$sdk" -target "$arch-apple-ios18.0-simulator" -swift-version 5 -parse-as-library \
- -module-name GoToHPActivity -emit-library -emit-module \
+ -module-name GoToHPActivity -application-extension -emit-library -emit-module \
  -emit-module-path "$framework/Modules/GoToHPActivity.swiftmodule/$arch-apple-ios-simulator.swiftmodule" \
  -Xlinker -install_name -Xlinker @rpath/GoToHPActivity.framework/GoToHPActivity \
  LiveActivity/GSUploadVisualState.swift LiveActivity/GSUploadAttributes.swift LiveActivity/GSUploadLiveActivity.swift -o "$framework/GoToHPActivity"

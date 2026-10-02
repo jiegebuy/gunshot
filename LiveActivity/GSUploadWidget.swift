@@ -11,8 +11,17 @@ struct GSUploadWidget: Widget {
                 .activitySystemActionForegroundColor(.primary)
         } dynamicIsland: { context in
             DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Label("\(context.state.files.count)", systemImage: "arrow.up.circle.fill").font(.caption.bold()).foregroundStyle(.mint)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    HStack(spacing: 6) {
+                        GSRateSparkline(values: context.state.history).stroke(.mint, lineWidth: 1.5).frame(width: 30, height: 14)
+                        Text(GSUploadText.rate(context.isStale ? nil : context.state.speed)).font(.caption.bold()).monospacedDigit()
+                    }
+                }
                 DynamicIslandExpandedRegion(.bottom) {
-                    GSUploadCard(state: context.state, language: context.attributes.language, stale: context.isStale, glass: false)
+                    GSUploadCard(state: context.state, language: context.attributes.language, stale: context.isStale, glass: false, showHeader: false)
                 }
             } compactLeading: {
                 HStack(spacing: 3) {

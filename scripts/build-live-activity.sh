@@ -11,7 +11,7 @@ framework="$out/GoToHPActivity.framework"
 extension="$out/GoToHPUploadProgress.appex"
 mkdir -p "$framework/Modules/GoToHPActivity.swiftmodule" "$extension"
 xcrun swiftc -sdk "$sdk" -target arm64-apple-ios18.0 -swift-version 5 -parse-as-library -O \
- -module-name GoToHPActivity -emit-library -emit-module -enable-library-evolution \
+ -module-name GoToHPActivity -application-extension -emit-library -emit-module -enable-library-evolution \
  -emit-module-path "$framework/Modules/GoToHPActivity.swiftmodule/arm64-apple-ios.swiftmodule" \
  -emit-module-interface-path "$framework/Modules/GoToHPActivity.swiftmodule/arm64-apple-ios.swiftinterface" \
  -Xlinker -install_name -Xlinker @rpath/GoToHPActivity.framework/GoToHPActivity \

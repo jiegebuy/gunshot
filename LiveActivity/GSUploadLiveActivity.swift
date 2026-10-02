@@ -4,6 +4,7 @@ import ActivityKit
 // Loaded by the injected host only when the companion framework and extension
 // are installed. The data model is in this same module in host and extension.
 @MainActor @objc(GSUploadLiveActivity)
+@available(iOSApplicationExtension, unavailable)
 public final class GSUploadLiveActivity: NSObject {
     private static var activity: Activity<GSUploadAttributes>?
     private static var reducer = GSUploadVisualReducer()
