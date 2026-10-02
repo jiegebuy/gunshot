@@ -13,6 +13,8 @@ def configure(info):
     modes = info.setdefault("UIBackgroundModes", [])
     if "processing" not in modes:
         modes.append("processing")
+    info["NSSupportsLiveActivities"] = True
+    info["NSSupportsLiveActivitiesFrequentUpdates"] = True
     return info
 
 

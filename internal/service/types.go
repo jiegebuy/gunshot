@@ -138,6 +138,7 @@ type Engine struct {
 	fingerprintReceipts     map[string]FingerprintReceipt
 	fingerprintReceiptsByID map[string]FingerprintReceipt
 	active                  map[string]context.CancelFunc
+	activityRates           map[string]*uploadRateWindow // transient, guarded by mu
 	runner                  Runner
 	reconciler              func(context.Context, string, []byte) (string, error)
 	online, wifi, charging  bool

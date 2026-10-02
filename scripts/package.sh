@@ -10,6 +10,7 @@ if [[ "$scheme" == jailed ]]; then
   make -C Jailed clean
   make -C Jailed package FINALPACKAGE=1 "${args[@]}"
   python3 scripts/export-jailed.py
+  bash scripts/build-live-activity.sh
 else
   make clean
   make -k package FINALPACKAGE=1 "${args[@]}"

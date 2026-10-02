@@ -29,6 +29,14 @@ NSString *const GSBackgroundUploadChanged=@"GoToHPBackgroundUploadChanged";
 - (void)cancelTaskRequestWithIdentifier:(NSString *)identifier;
 @end
 
+@interface NSObject (GSUploadLiveActivityABI)
++ (void)startWithIdentifier:(NSString *)identifier language:(NSString *)language;
++ (void)updateWithPayload:(NSDictionary *)payload;
++ (void)markUnavailable;
++ (void)finishWithSuccess:(BOOL)success;
++ (NSDictionary *)snapshot;
+@end
+
 static NSDictionary *GSSnapshot;
 #if GS_JAILED
 static id<GSContinuedTask> GSTask;
@@ -40,6 +48,23 @@ static NSUInteger GSEpoch,GSCount;
 static int64_t GSProgressUnits;
 static unsigned long long GSExportedBytes,GSCloudProgressUnits,GSStagedBytes,GSSourceReadBytes,GSScannedItems,GSUploadBytes;
 static BOOL GSPolling,GSUploadBaseline;
+static Class GSVisualBridge;
+static NSDictionary *GSVisualSnapshot;
+static void GSVisualRecord(void){
+ @synchronized(GSBackgroundUploadChanged){GSVisualSnapshot=GSVisualBridge?[GSVisualBridge snapshot]:@{@"status":@"unavailable",@"active":@NO};}
+}
+static void GSStartVisualActivity(NSUInteger epoch){
+#if !GS_TEST_BACKGROUND
+ static dispatch_once_t once;dispatch_once(&once,^{
+  NSString *framework=[NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"GoToHPActivity.framework/GoToHPActivity"];
+  if([NSBundle.mainBundle objectForInfoDictionaryKey:@"NSSupportsLiveActivities"]&&[NSFileManager.defaultManager fileExistsAtPath:framework]){
+   dlopen(framework.fileSystemRepresentation,RTLD_NOW|RTLD_LOCAL);
+   GSVisualBridge=NSClassFromString(@"GSUploadLiveActivity");
+  }
+ });
+#endif
+ [GSVisualBridge startWithIdentifier:[NSString stringWithFormat:@"%lu",(unsigned long)epoch] language:GSLanguage()];GSVisualRecord();
+}
 // Google Photos begins UIKit background tasks continuously while it runs, and
 // one of them is begun again at the instant the background budget expires and
 // is never ended. RunningBoard then kills the whole process (0x2182BAD2,
@@ -245,6 +270,7 @@ static void GSEndShortTask(void){
 static NSUInteger GSFinishBackgroundWithExpiry(BOOL success,NSString *status,BOOL expired){
  NSUInteger epoch=++GSEpoch;[GSTimer invalidate];GSTimer=nil;GSPolling=NO;
  id<GSContinuedTask> task=GSTask;GSTask=nil;
+ [GSVisualBridge finishWithSuccess:success];GSVisualRecord();
  NSString *identifier=GSIdentifier;GSIdentifier=nil;
  UIBackgroundTaskIdentifier shortTask=GSShortTask;GSShortTask=UIBackgroundTaskInvalid;
  NSArray *deferred=GSDetachDeferredTasks(),*open=nil;
@@ -314,11 +340,13 @@ static void GSPollBackground(void){
    if(!summary){
     // Never present an old file's percentage as a fresh reading.
     [GSTask updateTitle:@"GoToHP" subtitle:GSL(@"Upload progress unavailable")];
+    [GSVisualBridge markUnavailable];GSVisualRecord();
     return; // An unavailable service is never treated as completion.
    }
    BOOL finished=![batch[@"active"]boolValue]&&outstanding==0;
    NSUInteger prepared=MIN(GSCount,[batch[@"processed"]unsignedIntegerValue]);
    NSUInteger uploaded=prepared>outstanding?prepared-outstanding:0;
+   [GSVisualBridge updateWithPayload:summary];GSVisualRecord();
    if(GSTask){
     // Item counts can stand still during a large upload; only moving bytes
     // advance intermediate units. A waiting preparation is not progress.
@@ -355,6 +383,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  GSSourceReadBytes=0;
  GSUploadBytes=0;GSUploadBaseline=NO;
  GSCurrentUploadID=nil;
+ GSStartVisualActivity(epoch);
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
  UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
   if(epoch!=GSEpoch)return;
@@ -404,7 +433,12 @@ void GSInstallBackgroundTaskGuard(void){
 }
 NSDictionary *GSBackgroundUploadSnapshot(void){
  NSDictionary *snapshot;
- @synchronized(GSBackgroundUploadChanged){snapshot=GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};}
+ @synchronized(GSBackgroundUploadChanged){
+  snapshot=GSSnapshot?:@{@"granted":@NO,@"status":@"idle"};
+#if GS_JAILED
+  if(GSVisualSnapshot){NSMutableDictionary *merged=[snapshot mutableCopy];merged[@"visualActivity"]=GSVisualSnapshot;snapshot=merged;}
+#endif
+ }
 #if GS_JAILED
  if(GSDeferredLock)@synchronized(GSDeferredLock){
   NSMutableDictionary *merged=[snapshot mutableCopy];

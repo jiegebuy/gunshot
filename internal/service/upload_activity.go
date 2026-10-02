@@ -1,6 +1,10 @@
 package service
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"sort"
+	"time"
+)
 
 // This UI-only response may contain a filename. Keep it out of upload_summary,
 // which is also used by exported diagnostics. Caller holds e.mu.
@@ -12,10 +16,20 @@ type uploadActivityItem struct {
 	Total       int64  `json:"total"`
 	Measurement string `json:"measurement"`
 	LivePhoto   bool   `json:"livePhoto"`
+	Speed       *int64 `json:"speed,omitempty"` // recent measured bytes/second; nil until sampled
 }
 
 func (e *Engine) uploadActivity(preferred string) map[string]any {
+	return e.uploadActivityAt(preferred, time.Now())
+}
+
+func (e *Engine) uploadActivityAt(preferred string, now time.Time) map[string]any {
 	var selected *Job
+	type candidate struct {
+		job  *Job
+		rank int
+	}
+	var candidates []candidate
 	best := 0
 	for _, j := range e.state.Jobs {
 		if j.CancelRequested || len(j.Resources) == 0 {
@@ -47,11 +61,46 @@ func (e *Engine) uploadActivity(preferred string) map[string]any {
 		if rank > best || (rank > 0 && rank == best && j.ID == preferred) {
 			selected, best = j, rank
 		}
+		if rank > 0 {
+			candidates = append(candidates, candidate{j, rank})
+		}
 	}
 	result := e.uploadSummary()
-	if selected == nil {
-		return result
+	if e.activityRates == nil {
+		e.activityRates = map[string]*uploadRateWindow{}
 	}
+	seen := map[string]bool{}
+	items := make([]*uploadActivityItem, 0, len(candidates))
+	// Network slots are capped at eight. Put every active slot before waiting
+	// producers so the 12-tile Live Activity always includes all active uploads.
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].rank > candidates[j].rank })
+	for _, c := range candidates {
+		item := e.uploadActivityItem(c.job)
+		seen[item.ID] = true
+		window := e.activityRates[item.ID]
+		if window == nil {
+			window = &uploadRateWindow{}
+			e.activityRates[item.ID] = window
+		}
+		item.Speed = window.sample(now, item.Uploaded, item.Measurement, item.State, c.job.Attempts)
+		if len(items) < 12 {
+			items = append(items, item)
+		}
+		if c.job == selected {
+			result["currentUpload"] = item
+		}
+	}
+	for id := range e.activityRates {
+		if !seen[id] {
+			delete(e.activityRates, id)
+		}
+	}
+	result["uploads"] = items
+	result["sampledAt"] = now.UnixMilli()
+	return result
+}
+
+func (e *Engine) uploadActivityItem(selected *Job) *uploadActivityItem {
 	item := &uploadActivityItem{
 		ID: selected.ID, Name: filepath.Base(selected.Resources[0].Name),
 		State: selected.State, Uploaded: max(0, selected.Uploaded),
@@ -76,6 +125,5 @@ func (e *Engine) uploadActivity(preferred string) map[string]any {
 	if item.Total > 0 {
 		item.Uploaded = min(item.Uploaded, item.Total)
 	}
-	result["currentUpload"] = item
-	return result
+	return item
 }
