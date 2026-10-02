@@ -6,7 +6,9 @@ import GoToHPActivity
 struct GSUploadWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: GSUploadAttributes.self) { context in
-            GSUploadCard(state: context.state, language: context.attributes.language, stale: context.isStale)
+            // SpringBoard supplies the Live Activity glass container. Custom
+            // glassEffect content is flattened by WidgetKit's remote renderer.
+            GSUploadCard(state: context.state, language: context.attributes.language, stale: context.isStale, glass: false)
                 .activityBackgroundTint(.clear)
                 .activitySystemActionForegroundColor(.primary)
         } dynamicIsland: { context in

@@ -50,6 +50,14 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
             GSUploadLiveActivity.start(identifier: "fixture", language: "zh-hans")
             print("ActivityKit start: \(GSUploadLiveActivity.snapshot())")
             fflush(stdout)
+            if ProcessInfo.processInfo.arguments.contains("--lock-screen") {
+                let files = previewState(count: 8).files
+                let rows: [[String: Any]] = files.map { file in
+                    ["id": file.id, "name": file.name, "uploaded": file.uploaded, "total": file.total,
+                     "speed": file.speed ?? 0, "measurement": "acknowledged", "state": "uploading"]
+                }
+                GSUploadLiveActivity.update(payload: ["uploads": rows, "sampledAt": Date().timeIntervalSince1970 * 1000])
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -59,6 +67,7 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
             let started = GSUploadLiveActivity.snapshot()["active"] as? Bool == true
             let result = "\(fits && started ? "PASS" : "FAIL") all file tiles fit the 160-point Live Activity limit: \(measured); ActivityKit registered: \(started)"
             try! result.write(to: documents.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+            if ProcessInfo.processInfo.arguments.contains("--lock-screen") { return }
             GSUploadLiveActivity.finish(success: true)
             print(result); exit(fits && started ? 0 : 1)
         }

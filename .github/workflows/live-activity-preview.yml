@@ -6,6 +6,7 @@ on:
     paths:
       - 'LiveActivity/**'
       - 'tests/live_activity_preview.swift'
+      - 'tests/live_activity_lockscreen.swift'
       - 'tests/upload_activity_state.swift'
       - 'scripts/*live-activity*'
       - '.github/workflows/live-activity-preview.yml'
@@ -19,7 +20,7 @@ jobs:
       - name: Build device framework and widget
         run: bash scripts/build-live-activity.sh
       - name: Verify measured data and render all file tiles
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: bash scripts/test-live-activity-ui.sh
       - uses: actions/upload-artifact@v4
         if: always()
@@ -30,4 +31,7 @@ jobs:
             packages/jailed/live-activity/
             .build/live-activity-ui/result.txt
             .build/live-activity-ui/live-activity-preview.png
+            .build/live-activity-ui/lockscreen-screenshots/
+            .build/live-activity-ui/lockscreen-test.log
+            .build/live-activity-ui/renderer.log
           if-no-files-found: warn

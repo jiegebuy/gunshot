@@ -58,4 +58,5 @@ documents=pathlib.Path(run('xcrun','simctl','get_app_container',device,'dev.tqma
 for name in ('result.txt','live-activity-preview.png'): shutil.copy2(documents/name,pathlib.Path('.build/live-activity-ui')/name)
 result=(documents/'result.txt').read_text();print(result)
 assert result.startswith('PASS ')
+subprocess.run(['bash','scripts/test-live-activity-lockscreen.sh',device],check=True,timeout=300)
 PY
