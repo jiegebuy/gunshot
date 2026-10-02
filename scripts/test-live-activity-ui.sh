@@ -49,7 +49,11 @@ device=run('xcrun','simctl','create','GoToHP Live Activity Preview',kind['identi
 subprocess.run(['xcrun','simctl','boot',device],check=True,timeout=90)
 subprocess.run(['xcrun','simctl','bootstatus',device,'-b'],check=True,timeout=240)
 subprocess.run(['xcrun','simctl','install',device,'.build/live-activity-ui/Preview.app'],check=True,timeout=120)
-subprocess.run(['xcrun','simctl','launch','--console',device,'dev.tqmane.gunshot.activitypreview'],check=True,timeout=90)
+try:
+ subprocess.run(['xcrun','simctl','launch','--console',device,'dev.tqmane.gunshot.activitypreview'],check=True,timeout=180)
+except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+ subprocess.run(['xcrun','simctl','spawn',device,'log','show','--last','3m','--style','compact','--predicate','process == "Preview" OR process == "GoToHPUploadProgress"'],timeout=30)
+ raise
 documents=pathlib.Path(run('xcrun','simctl','get_app_container',device,'dev.tqmane.gunshot.activitypreview','data'))/'Documents'
 for name in ('result.txt','live-activity-preview.png'): shutil.copy2(documents/name,pathlib.Path('.build/live-activity-ui')/name)
 result=(documents/'result.txt').read_text();print(result)

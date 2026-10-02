@@ -41,12 +41,15 @@ struct PreviewCanvas: View {
 final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
     var window: UIWindow?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        print("Preview host launched"); fflush(stdout)
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = UIHostingController(rootView: PreviewCanvas())
         window.makeKeyAndVisible(); self.window = window
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            print("Requesting ActivityKit registration"); fflush(stdout)
             GSUploadLiveActivity.start(identifier: "fixture", language: "zh-hans")
             print("ActivityKit start: \(GSUploadLiveActivity.snapshot())")
+            fflush(stdout)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
