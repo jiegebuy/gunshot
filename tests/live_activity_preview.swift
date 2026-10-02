@@ -7,10 +7,12 @@ import GoToHPActivity
 
 func previewState(count: Int) -> GSUploadVisualState {
     let names = ["IMG_0241.HEIC", "夜景_4K_HDR.MOV", "Live_0243.HEIC", "IMG_0244.JPG", "海边慢动作.MOV", "IMG_0246.HEIC", "IMG_0247.PNG", "旅行长视频.MOV", "IMG_0249.HEIC", "IMG_0250.MOV", "IMG_0251.HEIC", "IMG_0252.MOV"]
-    let files = (0..<count).compactMap { index in
-        GSUploadFileState(["id": "\(index)", "name": names[index], "uploaded": (index + 1) * 8_000_000,
-                           "total": 100_000_000, "speed": (index + 1) * 250_000,
-                           "state": index == 5 ? "waiting_source" : "uploading", "measurement": "acknowledged", "livePhoto": index == 2])
+    var files: [GSUploadFileState] = []
+    for index in 0..<count {
+        let row: [String: Any] = ["id": String(index), "name": names[index], "uploaded": Int64(index + 1) * 8_000_000,
+                                  "total": Int64(100_000_000), "speed": Int64(index + 1) * 250_000,
+                                  "state": index == 5 ? "waiting_source" : "uploading", "measurement": "acknowledged", "livePhoto": index == 2]
+        if let file = GSUploadFileState(row) { files.append(file) }
     }
     return GSUploadVisualState(files: files, speed: 9_500_000, history: [0, 1_000_000, 6_000_000, 4_000_000, 8_000_000, 5_000_000, 9_500_000], waiting: 39)
 }
