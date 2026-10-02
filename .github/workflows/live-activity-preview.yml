@@ -1,6 +1,14 @@
 name: Live Activity preview
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/live-upload-progress]
+    paths:
+      - 'LiveActivity/**'
+      - 'tests/live_activity_preview.swift'
+      - 'tests/upload_activity_state.swift'
+      - 'scripts/*live-activity*'
+      - '.github/workflows/live-activity-preview.yml'
 permissions:
   contents: read
 jobs:

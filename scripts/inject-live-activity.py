@@ -39,7 +39,11 @@ def inject(source, destination, assets):
                 content = plistlib.dumps(info, fmt=plistlib.FMT_BINARY)
             output.writestr(entry, content)
         for name, content in additions.items():
-            output.writestr(name, content)
+            entry = zipfile.ZipInfo(name)
+            entry.create_system = 3
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = (0o100755 if content[:4] == bytes.fromhex('cffaedfe') else 0o100644) << 16
+            output.writestr(entry, content)
 
 
 if __name__ == '__main__':
