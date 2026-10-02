@@ -22,9 +22,12 @@ struct UploadVisualStateTests {
         rows[0]["speed"] = nil
         let retry = reducer.update(["uploads": rows, "sampledAt": time + 6000])
         precondition(retry.files[0].percent == 0 && retry.files[0].speed == nil)
+        precondition(retry.speed == nil, "A partial sum was presented as the total upload rate")
         rows[0]["total"] = 0
         let unknown = reducer.update(["uploads": rows, "sampledAt": time + 8000])
         precondition(unknown.files[0].fraction == nil && unknown.files[0].percent == nil)
+        precondition(unknown.speed == nil && unknown.history == retry.history)
+        rows[0]["speed"] = Int64(0)
         for i in 5..<40 { _ = reducer.update(["uploads": rows, "sampledAt": time + Double(i * 2000)]) }
         precondition(reducer.state.history.count == 16)
         let encoded = try JSONEncoder().encode(reducer.state)
