@@ -63,7 +63,7 @@ char *GSFixtureRequest(char *json,char *role){
  if([op isEqual:@"conditions"])atomic_fetch_add(&FixtureConditionWrites,1);
  // Runtime requests cross the real C ABI and Go JSON decoder. The previous
  // all-fake service accepted integer 1/0 via boolValue and missed this bug.
- if([op isEqual:@"conditions"]||[op isEqual:@"list"]||[op isEqual:@"upload_summary"])return GunshotRequest(json,role);
+ if([op isEqual:@"conditions"]||[op isEqual:@"list"]||[op isEqual:@"upload_summary"]||[op isEqual:@"upload_activity"])return GunshotRequest(json,role);
  if([op isEqual:@"account_native"]){
   atomic_fetch_add(&FixtureNativeConnections,1);
   NSLog(@"Fixture: authorizing");

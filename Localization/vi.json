@@ -1,4 +1,11 @@
 {
+  "Sent": "Đã gửi",
+  "Server received": "Máy chủ đã nhận",
+  "Waiting for server confirmation": "Đang chờ máy chủ xác nhận",
+  "Retrying upload": "Đang thử tải lên lại",
+  "Waiting for original data": "Đang chờ dữ liệu gốc",
+  "Upload progress unavailable": "Chưa thể lấy tiến độ tải lên",
+  "Live Photo · %@": "Live Photo · %@",
   "Queue storage failed. Waiting for recovery; select the album again after recovery.": "Không thể lưu hàng đợi. Đang chờ khôi phục; hãy chọn lại album sau khi khôi phục.",
   "Check the GoToHP queue for details. Native upload has not been used.": "Kiểm tra hàng đợi GoToHP để biết chi tiết. Tính năng tải lên gốc chưa được sử dụng.",
   "Original quality (original data available)": "Chất lượng gốc (có sẵn dữ liệu gốc)",

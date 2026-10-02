@@ -33,6 +33,7 @@ static NSDictionary *GSSnapshot;
 #if GS_JAILED
 static id<GSContinuedTask> GSTask;
 static NSString *GSIdentifier;
+static NSString *GSCurrentUploadID;
 static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
@@ -279,16 +280,30 @@ static void GSUpdatePreparationProgress(void){
  GSProgressUnits=MIN(GSBackgroundTotal()-1,MAX(GSProgressUnits+(moved?1:0),prepared));
  GSTask.progress.completedUnitCount=GSProgressUnits;
 }
+static NSString *GSUploadActivitySubtitle(NSDictionary *item){
+ NSString *state=item[@"state"];
+ int64_t sent=MAX((int64_t)0,[item[@"uploaded"]longLongValue]),total=MAX((int64_t)0,[item[@"total"]longLongValue]);
+ if(total>0)sent=MIN(sent,total);
+ NSString *bytes=[NSByteCountFormatter stringFromByteCount:sent countStyle:NSByteCountFormatterCountStyleFile];
+ NSString *amount=total>0?[NSString stringWithFormat:@"%ld%% · %@ / %@",(long)(100.0*(double)sent/(double)total),bytes,[NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]]:bytes;
+ NSString *phase=[item[@"measurement"]isEqual:@"acknowledged"]?GSL(@"Server received"):GSL(@"Sent");
+ if([state isEqual:@"committing"]||([state isEqual:@"uploading"]&&total>0&&sent==total))phase=GSL(@"Waiting for server confirmation");
+ else if([state isEqual:@"retrying"])phase=GSL(@"Retrying upload");
+ else if([state isEqual:@"waiting_source"])phase=GSL(@"Waiting for original data");
+ else if([state isEqual:@"preparing"])return GSL(@"Preparing uploads");
+ return [NSString stringWithFormat:@"%@ · %@",phase,amount];
+}
 static void GSPollBackground(void){
  // PhotoKit and queue-copy progress must reach dasd even while the upload service is busy.
  GSUpdatePreparationProgress();
  if(GSPolling)return;GSPolling=YES;NSUInteger epoch=GSEpoch;
+ NSString *preferred=GSCurrentUploadID?:@"";
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{@autoreleasepool{
   // Read the producer first: a finished batch has sealed its last job before
   // we inspect the queue. Reversing these reads can observe an empty queue
   // just before the final seal and prematurely release the background grant.
   NSDictionary *batch=GSBatchImportSnapshot();
-  NSDictionary *summary=GSRequest(@{@"op":@"upload_summary"},nil);
+  NSDictionary *summary=GSRequest(@{@"op":@"upload_activity",@"id":preferred},nil);
   NSUInteger outstanding=0;
   for(NSDictionary *profile in [summary[@"profiles"]allValues])for(NSString *key in @[@"importing",@"pending",@"preparing",@"uploading",@"committing"])
    outstanding+=[profile[@"states"][key]unsignedIntegerValue];
@@ -296,7 +311,11 @@ static void GSPollBackground(void){
    if(epoch!=GSEpoch)return;GSPolling=NO;
    NSString *reason=batch[@"stopReason"];
    if([reason isEqual:@"account_changed"]||[reason isEqual:@"background_expired"]||[summary[@"conditions"][@"paused"]boolValue]){GSFinishBackground(NO,@"stopped");return;}
-   if(!summary)return; // An unavailable service is never treated as completion.
+   if(!summary){
+    // Never present an old file's percentage as a fresh reading.
+    [GSTask updateTitle:@"GoToHP" subtitle:GSL(@"Upload progress unavailable")];
+    return; // An unavailable service is never treated as completion.
+   }
    BOOL finished=![batch[@"active"]boolValue]&&outstanding==0;
    NSUInteger prepared=MIN(GSCount,[batch[@"processed"]unsignedIntegerValue]);
    NSUInteger uploaded=prepared>outstanding?prepared-outstanding:0;
@@ -310,7 +329,16 @@ static void GSPollBackground(void){
     GSProgressUnits=allPrepared?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
     GSTask.progress.totalUnitCount=total;
     GSTask.progress.completedUnitCount=GSProgressUnits;
-    [GSTask updateTitle:@"GoToHP" subtitle:[NSString stringWithFormat:GSL(@"Prepared %lu / %lu · %lu pending"),(unsigned long)prepared,(unsigned long)GSCount,(unsigned long)outstanding]];
+    // NSProgress covers the whole preparation/upload grant. The per-file
+    // percentage is independent of those scheduling units and uses real bytes.
+    NSDictionary *item=summary[@"currentUpload"];
+    GSCurrentUploadID=item[@"id"];
+    if(item){
+     NSString *name=item[@"name"]?:@"GoToHP";
+     name=[[name componentsSeparatedByCharactersInSet:NSCharacterSet.controlCharacterSet]componentsJoinedByString:@" "];
+     NSString *title=[item[@"livePhoto"]boolValue]?[NSString stringWithFormat:GSL(@"Live Photo · %@"),name]:name;
+     [GSTask updateTitle:title subtitle:GSUploadActivitySubtitle(item)];
+    }else [GSTask updateTitle:@"GoToHP" subtitle:[NSString stringWithFormat:GSL(@"Prepared %lu / %lu · %lu pending"),(unsigned long)prepared,(unsigned long)GSCount,(unsigned long)outstanding]];
    }
    if(finished)GSFinishBackground(!reason.length&&[batch[@"remaining"]unsignedIntegerValue]==0&&[batch[@"failed"]unsignedIntegerValue]==0,reason?:@"finished");
   });
@@ -326,6 +354,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  GSCount=MIN(count,(NSUInteger)(INT64_MAX/2000));GSProgressUnits=0;GSExportedBytes=0;GSCloudProgressUnits=0;GSStagedBytes=0;GSScannedItems=0;
  GSSourceReadBytes=0;
  GSUploadBytes=0;GSUploadBaseline=NO;
+ GSCurrentUploadID=nil;
  GSBackgroundRecord(@{@"granted":@NO,@"status":@"foreground_only"});if(epoch!=GSEpoch)return;
  UIBackgroundTaskIdentifier shortTask=[UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
   if(epoch!=GSEpoch)return;

@@ -65,13 +65,15 @@ static UIBackgroundTaskIdentifier FixtureBegin(BOOL named,NSString *name,void (^
 @property(nonatomic,strong) NSProgress *progress;
 @property NSUInteger completions;
 @property BOOL success;
+@property(copy) NSString *title,*subtitle;
 @end
 @implementation FixtureTask
 - (instancetype)init{if((self=[super init]))_progress=[NSProgress progressWithTotalUnitCount:1];return self;}
 - (void)setTaskCompletedWithSuccess:(BOOL)success{self.completions++;self.success=success;}
-- (void)updateTitle:(NSString *)title subtitle:(NSString *)subtitle{}
+- (void)updateTitle:(NSString *)title subtitle:(NSString *)subtitle{self.title=title;self.subtitle=subtitle;}
 @end
 NSDictionary *GSRequest(NSDictionary *request,NSError **error){
+ assert([request[@"op"]isEqual:@"upload_activity"]);
  NSDictionary *summary;dispatch_semaphore_t started,release;
  @synchronized(RealLock){
   if(SealDuringSummary){SealDuringSummary=NO;Batch=@{@"active":@NO,@"stage":@"finished",@"processed":@10,@"failed":@0};}
@@ -281,8 +283,33 @@ static void TestPreparationProgress(void){
  GSPollBackground();Drain();assert(replacement.progress.completedUnitCount==2);
  GSFinishBackground(NO,@"test_progress_end");
 }
+static void TestFileUploadActivity(void){
+ GSSetLanguage(@"en");Foreground();SetWork(YES,1);
+ GSBeginBackgroundUpload(10);FixtureTask *task=[FixtureTask new];Launch(task);Drain();
+ NSMutableDictionary *item=[@{@"id":@"one",@"name":@"original.mov",@"state":@"uploading",@"uploaded":@250,@"total":@1000,@"measurement":@"sent"}mutableCopy];
+ void (^publish)(void)=^{
+  @synchronized(RealLock){NSMutableDictionary *next=[Summary mutableCopy];next[@"currentUpload"]=[item copy];Summary=next;}
+  GSPollBackground();Drain();
+ };
+ publish();assert([task.title isEqual:@"original.mov"]&&[task.subtitle containsString:@"25%"]&&[GSCurrentUploadID isEqual:@"one"]);
+ NSString *unchanged=task.subtitle;
+ GSPollBackground();Drain();assert([task.subtitle isEqual:unchanged]); // Polls never simulate file progress.
+ item[@"uploaded"]=@0;publish();assert([task.subtitle containsString:@"0%"]); // Retry may go backwards.
+ item[@"uploaded"]=@999;publish();assert([task.subtitle containsString:@"99%"]&&![task.subtitle containsString:@"100%"]);
+ item[@"uploaded"]=@1000;publish();assert([task.subtitle containsString:@"Waiting for server confirmation"]&&task.completions==0);
+ item[@"total"]=@0;item[@"uploaded"]=@250;item[@"measurement"]=@"acknowledged";publish();
+ assert(![task.subtitle containsString:@"%"]&&[task.subtitle containsString:@"Server received"]);
+ item[@"state"]=@"retrying";publish();assert([task.subtitle containsString:@"Retrying upload"]);
+ item[@"state"]=@"waiting_source";publish();assert([task.subtitle containsString:@"Waiting for original data"]);
+ item[@"id"]=@"two";item[@"name"]=@"next.heic";item[@"livePhoto"]=@YES;item[@"total"]=@1000;item[@"uploaded"]=@100;item[@"state"]=@"uploading";publish();
+ assert([task.title isEqual:@"Live Photo · next.heic"]&&[task.subtitle containsString:@"10%"]&&[GSCurrentUploadID isEqual:@"two"]);
+ @synchronized(RealLock){Summary=nil;}GSPollBackground();Drain();assert([task.subtitle isEqual:@"Upload progress unavailable"]&&task.completions==0);
+ SetWork(YES,1);GSPollBackground();Drain();assert([task.title isEqual:@"GoToHP"]&&!GSCurrentUploadID);
+ GSFinishBackground(NO,@"test_activity_end");GSSetLanguage(@"system");
+}
 int main(void){@autoreleasepool{
  RealLock=[NSObject new];RealTasks=[NSMutableDictionary dictionary];UIApplication *app=UIApplication.sharedApplication;
+ TestFileUploadActivity();ShortEnds=0;
  SetWork(YES,2);GSBeginBackgroundUpload(10);assert([GSBackgroundUploadSnapshot()[@"status"]isEqual:@"requested"]);
  assert(![GSBackgroundUploadSnapshot()[@"granted"]boolValue]);
  FixtureTask *first=[FixtureTask new];Launch(first);Drain();assert([GSBackgroundUploadSnapshot()[@"granted"]boolValue]&&ShortEnds==1);

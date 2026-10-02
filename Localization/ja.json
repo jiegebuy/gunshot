@@ -1,4 +1,11 @@
 {
+  "Sent": "送信済み",
+  "Server received": "サーバー受信済み",
+  "Waiting for server confirmation": "サーバーの確認を待機中",
+  "Retrying upload": "アップロードを再試行中",
+  "Waiting for original data": "オリジナルのデータを待機中",
+  "Upload progress unavailable": "アップロードの進捗を取得できません",
+  "Live Photo · %@": "Live Photo · %@",
   "Queue storage failed. Waiting for recovery; select the album again after recovery.": "キューの保存に失敗しました。復旧を待っています。復旧後にアルバムを再選択してください。",
   "Check the GoToHP queue for details. Native upload has not been used.": "GoToHP のキューで状態を確認してください。純正アップロードには切り替えていません。",
   "Original quality (original data available)": "オリジナル画質（原本データあり）",

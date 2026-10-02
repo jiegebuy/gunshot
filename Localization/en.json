@@ -1,4 +1,11 @@
 {
+  "Sent": "Sent",
+  "Server received": "Server received",
+  "Waiting for server confirmation": "Waiting for server confirmation",
+  "Retrying upload": "Retrying upload",
+  "Waiting for original data": "Waiting for original data",
+  "Upload progress unavailable": "Upload progress unavailable",
+  "Live Photo · %@": "Live Photo · %@",
   "Queue storage failed. Waiting for recovery; select the album again after recovery.": "Queue storage failed. Waiting for recovery; select the album again after recovery.",
   "Check the GoToHP queue for details. Native upload has not been used.": "Check the GoToHP queue for details. Native upload has not been used.",
   "Original quality (original data available)": "Original quality (original data available)",

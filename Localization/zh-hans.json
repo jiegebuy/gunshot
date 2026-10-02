@@ -1,4 +1,11 @@
 {
+  "Sent": "已发送",
+  "Server received": "服务器已接收",
+  "Waiting for server confirmation": "等待服务器确认",
+  "Retrying upload": "正在重试上传",
+  "Waiting for original data": "等待原文件数据",
+  "Upload progress unavailable": "暂时无法获取上传进度",
+  "Live Photo · %@": "实况照片 · %@",
   "Queue storage failed. Waiting for recovery; select the album again after recovery.": "队列保存失败，正在等待恢复。恢复后请重新选择相册。",
   "Check the GoToHP queue for details. Native upload has not been used.": "未使用原生上传，请在 GoToHP 队列中查看详情",
   "Original quality (original data available)": "原始画质 (原始数据可用)",

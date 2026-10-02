@@ -41,7 +41,7 @@ func roleAllowed(role, op string) bool {
 	if role == "daemon" {
 		return op == "conditions"
 	}
-	common := op == "import_capacity" || op == "upload_summary" || op == "job" || op == "ping" || op == "list" || op == "accounts" || op == "options" || op == "retry" || op == "cancel" || op == "clear_completed" || op == "retry_failed"
+	common := op == "import_capacity" || op == "upload_summary" || op == "upload_activity" || op == "job" || op == "ping" || op == "list" || op == "accounts" || op == "options" || op == "retry" || op == "cancel" || op == "clear_completed" || op == "retry_failed"
 	if (role == "photos" || role == "googlephotos") && (op == "source_lookup" || op == "stream_window") {
 		return true
 	}
@@ -66,7 +66,7 @@ func (e *Engine) HandleJSON(b []byte, role string) []byte {
 	defer e.mu.Unlock()
 	held := time.Now()
 	defer func() { e.recordLock(r.Op, held.Sub(waited), time.Since(held)) }()
-	if e.fault && r.Op != "upload_summary" && r.Op != "list" && r.Op != "options" && r.Op != "ping" && r.Op != "conditions" && r.Op != "accounts" && r.Op != "source_lookup" && r.Op != "import_capacity" {
+	if e.fault && r.Op != "upload_summary" && r.Op != "upload_activity" && r.Op != "list" && r.Op != "options" && r.Op != "ping" && r.Op != "conditions" && r.Op != "accounts" && r.Op != "source_lookup" && r.Op != "import_capacity" {
 		return response(nil, errStorageFault)
 	}
 	data, err := e.handle(r, role)
@@ -106,6 +106,8 @@ func (e *Engine) handle(r Request, role string) (any, error) {
 		return e.state.Options, nil
 	case "upload_summary":
 		return e.uploadSummary(), nil
+	case "upload_activity":
+		return e.uploadActivity(r.ID), nil
 	case "import_capacity":
 		return e.importCapacity(), nil
 	case "conditions":
