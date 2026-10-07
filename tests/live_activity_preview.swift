@@ -77,7 +77,7 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
                     GSUploadLiveActivity.update(payload: ["uploads":[], "sampledAt":Date().timeIntervalSince1970*1000])
                     let stopped = GSUploadLiveActivity.snapshot()["batchActive"] as? Bool == false && GSUploadLiveActivity.snapshot()["active"] as? Bool == false
                     let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    let result = "\(recovered && stopped ? "PASS" : "FAIL") ended activity replaced; latest bytes preserved; completed batch never restarted"
+                    let result = "\(recovered && stopped ? "PASS" : "FAIL") ended activity replaced; latest bytes preserved; completed batch never restarted; snapshot=\(snapshot); replacementBytes=\(current?.content.state.files.first?.uploaded ?? -1); stopped=\(stopped)"
                     try! result.write(to: documents.appendingPathComponent("recovery-result.txt"), atomically: true, encoding: .utf8)
                     print(result); exit(recovered && stopped ? 0 : 1)
                 }

@@ -19,7 +19,6 @@ public final class GSUploadLiveActivity: NSObject {
     private static var foregroundObserver: NSObjectProtocol?
     private static var lastRequest = Date.distantPast
     private static var requestError: String?
-    private static var userDismissed = false
     private static var recoveries = 0
     private static let logger = Logger(subsystem: "com.google.photos.gotohp.activity", category: "lifecycle")
 
@@ -28,7 +27,7 @@ public final class GSUploadLiveActivity: NSObject {
         finish(success: false)
         reducer = GSUploadVisualReducer()
         batch = GSUploadAttributes(batchID: identifier, language: language)
-        userDismissed = false; recoveries = 0; lastRequest = .distantPast
+        recoveries = 0; lastRequest = .distantPast
         if foregroundObserver == nil {
             foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
                 Task { @MainActor in restoreIfNeeded() }
@@ -40,7 +39,7 @@ public final class GSUploadLiveActivity: NSObject {
     }
 
     private static func requestActivity(recovering: Bool) {
-        guard let attributes = batch, !userDismissed else { return }
+        guard let attributes = batch else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { result = "disabled"; return }
         guard UIApplication.shared.applicationState == .active else { result = "waiting_foreground"; return }
         // Failed requests and daemon reconciliation must not create a request loop.
@@ -74,7 +73,6 @@ public final class GSUploadLiveActivity: NSObject {
         generation += 1
         activity = nil; pending = nil; writer?.cancel(); writer = nil
         stateObserver?.cancel(); stateObserver = nil
-        if reason == "dismissed" { userDismissed = true }
         result = reason
         logger.notice("Upload activity unavailable: \(reason, privacy: .public)")
     }
@@ -93,7 +91,10 @@ public final class GSUploadLiveActivity: NSObject {
     private static func restoreIfNeeded() {
         guard batch != nil else { return }
         reconcile()
-        if activity == nil && !userDismissed { requestActivity(recovering: true) }
+        // Terminal activities may already report dismissed when the ended
+        // event arrives. Restore only after the user is back in this app;
+        // never replace a dismissed card while the app is in the background.
+        if activity == nil { requestActivity(recovering: true) }
     }
 
     @objc(updateWithPayload:)
