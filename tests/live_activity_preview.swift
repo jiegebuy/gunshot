@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UIKit
 import GoToHPActivity
+import ActivityKit
 
 @MainActor private var measured: [Int: CGFloat] = [:]
 
@@ -59,6 +60,29 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
                 GSUploadLiveActivity.update(payload: ["uploads": rows, "sampledAt": Date().timeIntervalSince1970 * 1000])
             }
         }
+        if ProcessInfo.processInfo.arguments.contains("--recover-activity") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                Task { @MainActor in
+                    let old = Activity<GSUploadAttributes>.activities.first!
+                    let oldID = old.id
+                    await old.end(nil, dismissalPolicy: .immediate)
+                    // Reproduce the daemon dropping a card while the upload
+                    // producer is still active and delivering real samples.
+                    GSUploadLiveActivity.update(payload: ["uploads": [["id":"recovery", "name":"recovery.mov", "uploaded":Int64(64000), "total":Int64(128000), "speed":Int64(32000)]], "sampledAt":Date().timeIntervalSince1970*1000])
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    let snapshot = GSUploadLiveActivity.snapshot()
+                    let current = Activity<GSUploadAttributes>.activities.first { $0.id != oldID }
+                    let recovered = snapshot["active"] as? Bool == true && snapshot["recoveries"] as? Int == 1 && current?.content.state.files.first?.uploaded == 64000
+                    GSUploadLiveActivity.finish(success: true)
+                    GSUploadLiveActivity.update(payload: ["uploads":[], "sampledAt":Date().timeIntervalSince1970*1000])
+                    let stopped = GSUploadLiveActivity.snapshot()["batchActive"] as? Bool == false && GSUploadLiveActivity.snapshot()["active"] as? Bool == false
+                    let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    let result = "\(recovered && stopped ? "PASS" : "FAIL") ended activity replaced; latest bytes preserved; completed batch never restarted"
+                    try! result.write(to: documents.appendingPathComponent("recovery-result.txt"), atomically: true, encoding: .utf8)
+                    print(result); exit(recovered && stopped ? 0 : 1)
+                }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
@@ -67,7 +91,7 @@ final class GSActivityPreviewDelegate: NSObject, UIApplicationDelegate {
             let started = GSUploadLiveActivity.snapshot()["active"] as? Bool == true
             let result = "\(fits && started ? "PASS" : "FAIL") all file tiles fit the 160-point Live Activity limit: \(measured); ActivityKit registered: \(started)"
             try! result.write(to: documents.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
-            if ProcessInfo.processInfo.arguments.contains("--lock-screen") { return }
+            if ProcessInfo.processInfo.arguments.contains("--lock-screen") || ProcessInfo.processInfo.arguments.contains("--recover-activity") { return }
             GSUploadLiveActivity.finish(success: true)
             print(result); exit(fits && started ? 0 : 1)
         }

@@ -30,6 +30,7 @@ jobs:
           path: |
             packages/jailed/live-activity/
             .build/live-activity-ui/result.txt
+            .build/live-activity-ui/recovery-result.txt
             .build/live-activity-ui/live-activity-preview.png
             .build/live-activity-ui/lockscreen-screenshots/
             .build/live-activity-ui/lockscreen-test.log

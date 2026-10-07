@@ -1,5 +1,7 @@
 import Foundation
 import ActivityKit
+import UIKit
+import OSLog
 
 // Loaded by the injected host only when the companion framework and extension
 // are installed. The data model is in this same module in host and extension.
@@ -12,23 +14,92 @@ public final class GSUploadLiveActivity: NSObject {
     private static var writer: Task<Void, Never>?
     private static var generation = 0
     private static var result = "idle"
+    private static var batch: GSUploadAttributes?
+    private static var stateObserver: Task<Void, Never>?
+    private static var foregroundObserver: NSObjectProtocol?
+    private static var lastRequest = Date.distantPast
+    private static var requestError: String?
+    private static var userDismissed = false
+    private static var recoveries = 0
+    private static let logger = Logger(subsystem: "com.google.photos.gotohp.activity", category: "lifecycle")
 
     @objc(startWithIdentifier:language:)
     public static func start(identifier: String, language: String) {
         finish(success: false)
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { result = "disabled"; return }
         reducer = GSUploadVisualReducer()
+        batch = GSUploadAttributes(batchID: identifier, language: language)
+        userDismissed = false; recoveries = 0; lastRequest = .distantPast
+        if foregroundObserver == nil {
+            foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                Task { @MainActor in restoreIfNeeded() }
+            }
+        }
         let previous = Activity<GSUploadAttributes>.activities
-        do {
-            activity = try Activity.request(attributes: GSUploadAttributes(batchID: identifier, language: language), content: ActivityContent(state: reducer.state, staleDate: Date().addingTimeInterval(10)), pushType: nil)
-            result = "running"
-        } catch { result = "request_failed" }
+        requestActivity(recovering: false)
         Task { for old in previous { await old.end(nil, dismissalPolicy: .immediate) } }
+    }
+
+    private static func requestActivity(recovering: Bool) {
+        guard let attributes = batch, !userDismissed else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { result = "disabled"; return }
+        guard UIApplication.shared.applicationState == .active else { result = "waiting_foreground"; return }
+        // Failed requests and daemon reconciliation must not create a request loop.
+        guard Date().timeIntervalSince(lastRequest) >= 5 else { return }
+        lastRequest = Date(); requestError = nil
+        do {
+            let current = try Activity.request(attributes: attributes, content: ActivityContent(state: reducer.state, staleDate: reducer.state.observedAt.addingTimeInterval(10)), pushType: nil)
+            activity = current
+            result = "running"
+            if recovering { recoveries += 1 }
+            let epoch = generation
+            stateObserver = Task {
+                for await state in current.activityStateUpdates {
+                    guard epoch == generation, activity?.id == current.id else { return }
+                    if state == .ended || state == .dismissed {
+                        invalidateCurrent(state == .dismissed ? "dismissed" : "ended")
+                        return
+                    }
+                }
+            }
+            logger.info("Upload activity created; recovery=\(recovering, privacy: .public)")
+        } catch {
+            let error = error as NSError
+            requestError = "\(error.domain):\(error.code)"
+            result = "request_failed"
+            logger.error("Upload activity request failed: \(requestError ?? "unknown", privacy: .public)")
+        }
+    }
+
+    private static func invalidateCurrent(_ reason: String) {
+        generation += 1
+        activity = nil; pending = nil; writer?.cancel(); writer = nil
+        stateObserver?.cancel(); stateObserver = nil
+        if reason == "dismissed" { userDismissed = true }
+        result = reason
+        logger.notice("Upload activity unavailable: \(reason, privacy: .public)")
+    }
+
+    private static func reconcile() {
+        guard let current = activity else { return }
+        if current.activityState == .dismissed { invalidateCurrent("dismissed"); return }
+        if current.activityState == .ended { invalidateCurrent("ended"); return }
+        // A surviving local Activity object is not proof the daemon still owns
+        // it (e.g. after daemon restart). Allow initial registration to settle.
+        if Date().timeIntervalSince(lastRequest) >= 5 && !Activity<GSUploadAttributes>.activities.contains(where: { $0.id == current.id }) {
+            invalidateCurrent("missing")
+        }
+    }
+
+    private static func restoreIfNeeded() {
+        guard batch != nil else { return }
+        reconcile()
+        if activity == nil && !userDismissed { requestActivity(recovering: true) }
     }
 
     @objc(updateWithPayload:)
     public static func update(payload: [String: Any]) {
         let state = reducer.update(payload)
+        restoreIfNeeded()
         enqueue(state, staleDate: state.observedAt.addingTimeInterval(10))
     }
 
@@ -40,7 +111,7 @@ public final class GSUploadLiveActivity: NSObject {
         guard writer == nil else { return }
         let epoch = generation
         writer = Task {
-            while generation == epoch, activity?.id == current.id, let next = pending {
+            while !Task.isCancelled, generation == epoch, activity?.id == current.id, let next = pending {
                 pending = nil
                 await current.update(next)
             }
@@ -57,6 +128,8 @@ public final class GSUploadLiveActivity: NSObject {
     @objc(finishWithSuccess:)
     public static func finish(success: Bool) {
         generation += 1
+        batch = nil
+        stateObserver?.cancel(); stateObserver = nil
         let current = activity, oldWriter = writer
         var state = reducer.state; state.status = success ? 1 : 2; state.speed = 0
         activity = nil; pending = nil; writer = nil
@@ -69,5 +142,12 @@ public final class GSUploadLiveActivity: NSObject {
     }
 
     @objc(snapshot)
-    public static func snapshot() -> [String: Any] { ["status": result, "active": activity != nil] }
+    public static func snapshot() -> [String: Any] {
+        reconcile()
+        var snapshot: [String: Any] = ["status": result, "active": activity != nil,
+            "allowed": ActivityAuthorizationInfo().areActivitiesEnabled, "recoveries": recoveries,
+            "fileCount": reducer.state.files.count, "batchActive": batch != nil]
+        if let requestError { snapshot["requestError"] = requestError }
+        return snapshot
+    }
 }

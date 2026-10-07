@@ -61,5 +61,11 @@ except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
 for name in ('result.txt','live-activity-preview.png'): shutil.copy2(documents/name,pathlib.Path('.build/live-activity-ui')/name)
 result=(documents/'result.txt').read_text();print(result)
 assert result.startswith('PASS ')
+subprocess.run(['xcrun','simctl','launch',device,'dev.tqmane.gunshot.activitypreview','--recover-activity'],check=True,timeout=90)
+deadline=time.monotonic()+60
+while not (documents/'recovery-result.txt').exists() and time.monotonic()<deadline: time.sleep(1)
+recovery=(documents/'recovery-result.txt').read_text();print(recovery)
+shutil.copy2(documents/'recovery-result.txt','.build/live-activity-ui/recovery-result.txt')
+assert recovery.startswith('PASS ')
 subprocess.run(['bash','scripts/test-live-activity-lockscreen.sh',device],check=True,timeout=300)
 PY
