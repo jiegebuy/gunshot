@@ -1,6 +1,12 @@
 name: Background upload repair
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/live-upload-progress]
+    paths:
+      - 'UI/GSBackgroundUpload.m'
+      - 'tests/background_upload.m'
+      - '.github/workflows/background-repair.yml'
 permissions:
   contents: read
 jobs:
