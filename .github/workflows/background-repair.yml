@@ -1,0 +1,47 @@
+name: Background upload repair
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Background lifetime and eight-hour progress regression
+        run: |
+          mkdir -p .build
+          clang -O2 -DGS_JAILED=1 -DGS_TEST_BACKGROUND=1 -fobjc-arc -framework Foundation tests/background_upload.m -o .build/background-upload-test
+          .build/background-upload-test
+  jailed-build:
+    runs-on: macos-15
+    env:
+      THEOS: ${{ github.workspace }}/.theos-sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+      - name: Install build tools
+        run: |
+          brew install ldid dpkg
+          git clone https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
+          git -C "$THEOS" submodule update --init --recursive
+          sdk=$(xcrun --sdk iphoneos --show-sdk-path)
+          version=$(xcrun --sdk iphoneos --show-sdk-version)
+          mkdir -p "$THEOS/sdks"
+          ln -s "$sdk" "$THEOS/sdks/iPhoneOS${version}.sdk"
+      - name: Build and verify device package
+        run: |
+          bash scripts/package.sh jailed
+          python3 scripts/verify-package.py jailed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: background-repair-jailed
+          path: |
+            packages/jailed/*.dylib
+            packages/jailed/live-activity/
+          if-no-files-found: error

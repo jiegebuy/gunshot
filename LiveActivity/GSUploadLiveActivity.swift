@@ -17,7 +17,7 @@ public final class GSUploadLiveActivity: NSObject {
     private static var batch: GSUploadAttributes?
     private static var stateObserver: Task<Void, Never>?
     private static var foregroundObserver: NSObjectProtocol?
-    private static var lastRequest = Date.distantPast
+    private static var lastRequestUptime: TimeInterval?
     private static var requestError: String?
     private static var recoveries = 0
     private static let logger = Logger(subsystem: "com.google.photos.gotohp.activity", category: "lifecycle")
@@ -27,7 +27,7 @@ public final class GSUploadLiveActivity: NSObject {
         finish(success: false)
         reducer = GSUploadVisualReducer()
         batch = GSUploadAttributes(batchID: identifier, language: language)
-        recoveries = 0; lastRequest = .distantPast
+        recoveries = 0; lastRequestUptime = nil
         if foregroundObserver == nil {
             foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
                 Task { @MainActor in restoreIfNeeded() }
@@ -43,8 +43,9 @@ public final class GSUploadLiveActivity: NSObject {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { result = "disabled"; return }
         guard UIApplication.shared.applicationState == .active else { result = "waiting_foreground"; return }
         // Failed requests and daemon reconciliation must not create a request loop.
-        guard Date().timeIntervalSince(lastRequest) >= 5 else { return }
-        lastRequest = Date(); requestError = nil
+        let now = ProcessInfo.processInfo.systemUptime
+        guard lastRequestUptime.map({ now - $0 >= 5 }) ?? true else { return }
+        lastRequestUptime = now; requestError = nil
         do {
             let current = try Activity.request(attributes: attributes, content: ActivityContent(state: reducer.state, staleDate: reducer.state.observedAt.addingTimeInterval(10)), pushType: nil)
             activity = current
@@ -83,7 +84,8 @@ public final class GSUploadLiveActivity: NSObject {
         if current.activityState == .ended { invalidateCurrent("ended"); return }
         // A surviving local Activity object is not proof the daemon still owns
         // it (e.g. after daemon restart). Allow initial registration to settle.
-        if Date().timeIntervalSince(lastRequest) >= 5 && !Activity<GSUploadAttributes>.activities.contains(where: { $0.id == current.id }) {
+        if let lastRequestUptime, ProcessInfo.processInfo.systemUptime - lastRequestUptime >= 5,
+           !Activity<GSUploadAttributes>.activities.contains(where: { $0.id == current.id }) {
             invalidateCurrent("missing")
         }
     }

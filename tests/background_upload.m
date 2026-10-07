@@ -243,7 +243,7 @@ static void TestPreparationProgress(void){
   SummaryStarted=dispatch_semaphore_create(0);SummaryRelease=dispatch_semaphore_create(0);
  }
  GSBeginBackgroundUpload(10);FixtureTask *task=[FixtureTask new];Launch(task);
- assert(task.progress.totalUnitCount==20000&&task.progress.completedUnitCount==0);
+ assert(task.progress.totalUnitCount==20000000&&task.progress.completedUnitCount==0);
  Await(SummaryStarted);
  @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@0,@"activePreparations":@12,@"cloudProgressUnits":@100};}
  GSPollBackground();assert(task.progress.completedUnitCount==1&&GSPolling);
@@ -306,6 +306,37 @@ static void TestFileUploadActivity(void){
  @synchronized(RealLock){Summary=nil;}GSPollBackground();Drain();assert([task.subtitle isEqual:@"Upload progress unavailable"]&&task.completions==0);
  SetWork(YES,1);GSPollBackground();Drain();assert([task.title isEqual:@"GoToHP"]&&!GSCurrentUploadID);
  GSFinishBackground(NO,@"test_activity_end");GSSetLanguage(@"system");
+}
+static void TestLongOriginalProgress(void){
+ Foreground();SetWork(YES,1);GSBeginBackgroundUpload(1);
+ FixtureTask *task=[FixtureTask new];Launch(task);Drain();
+ // Eight hours of two-second samples after staging one original. Repeated
+ // samples do not count, but every actual cloud read must still reach NSProgress.
+ @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@1};}
+ GSUpdatePreparationProgress();int64_t baseline=task.progress.completedUnitCount;
+ for(NSUInteger tick=1;tick<=14400;tick++){
+  @synchronized(RealLock){Batch=@{@"active":@YES,@"processed":@1,@"sourceReadBytes":@(tick*131072ULL)};}
+  GSUpdatePreparationProgress();
+  assert(task.progress.completedUnitCount==baseline+(int64_t)tick);
+  GSUpdatePreparationProgress();assert(task.progress.completedUnitCount==baseline+(int64_t)tick);
+ }
+ assert(task.progress.fractionCompleted<1&&task.completions==0);
+ int64_t final=task.progress.completedUnitCount;
+ GSFinishBackgroundWithExpiry(NO,@"expired",YES);
+ NSDictionary *progress=GSBackgroundUploadSnapshot()[@"progress"];
+ assert([progress[@"completed"]longLongValue]==final&&[progress[@"total"]longLongValue]>final);
+ assert(task.completions==1&&!task.success);
+}
+static void TestDuplicateGrant(void){
+ Foreground();SetWork(YES,1);GSBeginBackgroundUpload(10);
+ FixtureTask *first=[FixtureTask new],*duplicate=[FixtureTask new];Launch(first);Drain();
+ void (^expire)(void)=[first.expirationHandler copy];
+ Launch(first);assert(GSTask==first&&first.completions==0);
+ Launch(duplicate);assert(GSTask==first&&first.completions==0&&duplicate.completions==1&&!duplicate.success);
+ GSFinishBackground(NO,@"test_duplicate_end");
+ GSBeginBackgroundUpload(10);FixtureTask *replacement=[FixtureTask new];Launch(replacement);Drain();
+ expire();assert(GSTask==replacement&&replacement.completions==0);
+ GSFinishBackground(NO,@"test_duplicate_replacement_end");
 }
 int main(void){@autoreleasepool{
  RealLock=[NSObject new];RealTasks=[NSMutableDictionary dictionary];UIApplication *app=UIApplication.sharedApplication;
@@ -398,6 +429,7 @@ int main(void){@autoreleasepool{
  TestHandBackEndRace();TestHandBackReplacement();TestBeginNotificationReplacement();
  TestForegroundCancellation(NO);TestForegroundCancellation(YES);
  TestDeferredReplacement(NO);TestDeferredReplacement(YES);TestSweepReplacement();TestShortReplacement();TestPreparationProgress();
+ TestLongOriginalProgress();TestDuplicateGrant();
  Foreground();assert(RawCount()==0&&GSDeferred.count==0&&GSHandedBack.count==0&&!GSTask&&!GSTimer);
  NSLog(@"PASS background grant, progress, synchronous raw expiry, pending begin races, hand-back races, foreground cancellation and reentrant epoch isolation");
 }}

@@ -45,7 +45,11 @@ static NSString *GSCurrentUploadID;
 static NSTimer *GSTimer;
 static UIBackgroundTaskIdentifier GSShortTask;
 static NSUInteger GSEpoch,GSCount;
+// Leave room for measured byte movement during long originals. The old 1,000
+// units per phase could fill after ~33 minutes and stop reporting real work.
+static const int64_t GSProgressScale=1000000;
 static int64_t GSProgressUnits;
+static NSTimeInterval GSLastProgress;
 static unsigned long long GSExportedBytes,GSCloudProgressUnits,GSStagedBytes,GSSourceReadBytes,GSScannedItems,GSUploadBytes;
 static BOOL GSPolling,GSUploadBaseline;
 static Class GSVisualBridge;
@@ -260,7 +264,10 @@ static void GSFinishDeferredTasks(NSArray<GSTaskRecord *> *tasks,BOOL expired){
  }
 }
 static void GSBackgroundRecord(NSDictionary *state){
- @synchronized(GSBackgroundUploadChanged){GSSnapshot=[state copy];}
+ NSMutableDictionary *record=[state mutableCopy];
+ record[@"progress"]=@{@"completed":@(GSProgressUnits),@"total":@((int64_t)GSCount*GSProgressScale*2),
+  @"secondsSinceMovement":@(GSLastProgress?MAX(0,NSProcessInfo.processInfo.systemUptime-GSLastProgress):0)};
+ @synchronized(GSBackgroundUploadChanged){GSSnapshot=[record copy];}
  [NSNotificationCenter.defaultCenter postNotificationName:GSBackgroundUploadChanged object:nil];
 }
 static void GSEndShortTask(void){
@@ -290,7 +297,18 @@ static NSUInteger GSFinishBackgroundWithExpiry(BOOL success,NSString *status,BOO
  return epoch;
 }
 static NSUInteger GSFinishBackground(BOOL success,NSString *status){return GSFinishBackgroundWithExpiry(success,status,NO);}
-static int64_t GSBackgroundTotal(void){return (int64_t)MAX((NSUInteger)1,MIN(GSCount,(NSUInteger)(INT64_MAX/2000)))*2000;}
+static int64_t GSBackgroundTotal(void){return (int64_t)MAX((NSUInteger)1,MIN(GSCount,(NSUInteger)(INT64_MAX/(GSProgressScale*2))))*GSProgressScale*2;}
+static void GSReportProgress(int64_t units){
+ if(units>GSProgressUnits)GSLastProgress=NSProcessInfo.processInfo.systemUptime;
+ GSProgressUnits=units;
+ if(GSTask.progress.completedUnitCount!=units)GSTask.progress.completedUnitCount=units;
+ @synchronized(GSBackgroundUploadChanged){
+  NSMutableDictionary *record=[GSSnapshot mutableCopy];
+  record[@"progress"]=@{@"completed":@(units),@"total":@(GSBackgroundTotal()),
+   @"secondsSinceMovement":@(GSLastProgress?MAX(0,NSProcessInfo.processInfo.systemUptime-GSLastProgress):0)};
+  GSSnapshot=record;
+ }
+}
 static void GSUpdatePreparationProgress(void){
  if(!GSTask)return;
  NSDictionary *batch=GSBatchImportSnapshot();
@@ -302,9 +320,8 @@ static void GSUpdatePreparationProgress(void){
  GSExportedBytes=MAX(GSExportedBytes,bytes);GSCloudProgressUnits=MAX(GSCloudProgressUnits,cloud);GSStagedBytes=MAX(GSStagedBytes,staged);
  GSScannedItems=MAX(GSScannedItems,scanned);
  GSSourceReadBytes=MAX(GSSourceReadBytes,received);
- int64_t prepared=(int64_t)MIN(GSCount,[batch[@"processed"]unsignedIntegerValue])*1000;
- GSProgressUnits=MIN(GSBackgroundTotal()-1,MAX(GSProgressUnits+(moved?1:0),prepared));
- GSTask.progress.completedUnitCount=GSProgressUnits;
+ int64_t prepared=(int64_t)MIN(GSCount,[batch[@"processed"]unsignedIntegerValue])*GSProgressScale;
+ GSReportProgress(MIN(GSBackgroundTotal()-1,MAX(GSProgressUnits+(moved?1:0),prepared)));
 }
 static NSString *GSUploadActivitySubtitle(NSDictionary *item){
  NSString *state=item[@"state"];
@@ -350,13 +367,12 @@ static void GSPollBackground(void){
    if(GSTask){
     // Item counts can stand still during a large upload; only moving bytes
     // advance intermediate units. A waiting preparation is not progress.
-    const int64_t scale=1000,total=GSBackgroundTotal();
+    const int64_t scale=GSProgressScale,total=GSBackgroundTotal();
     unsigned long long bytes=[summary[@"transport"][@"uploadBodyBytesRead"]unsignedLongLongValue];
     BOOL active=GSUploadBaseline&&bytes>GSUploadBytes;GSUploadBytes=bytes;GSUploadBaseline=YES;
     BOOL allPrepared=finished&&!reason.length&&[batch[@"remaining"]unsignedIntegerValue]==0&&[batch[@"failed"]unsignedIntegerValue]==0;
-    GSProgressUnits=allPrepared?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale));
     GSTask.progress.totalUnitCount=total;
-    GSTask.progress.completedUnitCount=GSProgressUnits;
+    GSReportProgress(allPrepared?total:MIN(total-1,MAX(GSProgressUnits+(active?1:0),(int64_t)(prepared+uploaded)*scale)));
     // NSProgress covers the whole preparation/upload grant. The per-file
     // percentage is independent of those scheduling units and uses real bytes.
     NSDictionary *item=summary[@"currentUpload"];
@@ -379,7 +395,7 @@ void GSBeginBackgroundUpload(NSUInteger count){
  static dispatch_once_t once;dispatch_once(&once,^{GSShortTask=UIBackgroundTaskInvalid;});
  if(!count)return;
  NSUInteger epoch=GSFinishBackground(NO,@"replaced");if(epoch!=GSEpoch)return;
- GSCount=MIN(count,(NSUInteger)(INT64_MAX/2000));GSProgressUnits=0;GSExportedBytes=0;GSCloudProgressUnits=0;GSStagedBytes=0;GSScannedItems=0;
+ GSCount=MIN(count,(NSUInteger)(INT64_MAX/(GSProgressScale*2)));GSProgressUnits=0;GSLastProgress=0;GSExportedBytes=0;GSCloudProgressUnits=0;GSStagedBytes=0;GSScannedItems=0;
  GSSourceReadBytes=0;
  GSUploadBytes=0;GSUploadBaseline=NO;
  GSCurrentUploadID=nil;
@@ -402,10 +418,12 @@ void GSBeginBackgroundUpload(NSUInteger count){
   GSIdentifier=[prefix stringByAppendingFormat:@".%@",NSUUID.UUID.UUIDString];
   BOOL registered=[scheduler registerForTaskWithIdentifier:GSIdentifier usingQueue:dispatch_get_main_queue() launchHandler:^(id<GSContinuedTask> task){
    if(epoch!=GSEpoch){[task setTaskCompletedWithSuccess:NO];return;}
+   if(GSTask){if(GSTask!=task)[task setTaskCompletedWithSuccess:NO];return;}
    GSTask=task;task.progress.totalUnitCount=GSBackgroundTotal();task.progress.completedUnitCount=GSProgressUnits;
    if(deferrable)@synchronized(GSDeferredLock){GSDeferring=YES;GSExpiring=NO;GSBudgetGeneration++;}
+   __weak id<GSContinuedTask> owner=task;
    task.expirationHandler=^{
-    void (^expire)(void)=^{if(epoch==GSEpoch)GSFinishBackgroundWithExpiry(NO,@"expired",YES);};
+    void (^expire)(void)=^{if(epoch==GSEpoch&&owner&&GSTask==owner)GSFinishBackgroundWithExpiry(NO,@"expired",YES);};
     if(NSThread.isMainThread)expire();else dispatch_async(dispatch_get_main_queue(),expire);
    };
    GSBackgroundRecord(@{@"granted":@YES,@"status":@"running"});if(epoch!=GSEpoch)return;
